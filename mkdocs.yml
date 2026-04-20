@@ -1,9 +1,10 @@
 site_name: clusterbook-operator
-site_description: Kubernetes operator that turns clusterbook entries into ArgoCD cluster Secrets for ApplicationSets
+site_description: Kubernetes operator that turns clusterbook reservations into CiliumLoadBalancerIPPools and ArgoCD cluster Secrets
 nav:
   - Home: index.md
   - Install: install.md
-  - Usage: usage.md
+  - LoadBalancer: loadbalancer.md
+  - Cluster registration: usage.md
   - Configuration: configuration.md
   - Smoke Test: smoke-test.md
   - Development: development.md

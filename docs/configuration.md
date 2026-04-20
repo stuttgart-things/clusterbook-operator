@@ -35,6 +35,30 @@
 | `secretName` | Name of the ArgoCD cluster Secret (always `cluster-<clusterName>`) |
 | `conditions[type=Ready]` | `True` after a successful reconcile |
 
+## `ClusterbookLoadBalancer` spec
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `networkKey` | string | **required** | clusterbook network pool key |
+| `name` | string | **required** | Reservation key in clusterbook |
+| `createDNS` | bool | `false` | Ask clusterbook to create a wildcard DNS record |
+| `providerConfigRef.name` | string | **required** | Name of a `ClusterbookProviderConfig` |
+| `ciliumPool.poolName` | string | `<spec.name>-pool` | Name of the generated `CiliumLoadBalancerIPPool` |
+| `ciliumPool.serviceSelector` | `LabelSelector` | — | Copied verbatim onto the pool. Services matching this selector get an IP from the pool |
+| `releaseOnDelete` | bool | `false` | Release the clusterbook IP when the CR is deleted |
+
+Exactly one target mode must be set. Today `ciliumPool` is the only supported mode; `serviceRef` is a tracked follow-up.
+
+## `ClusterbookLoadBalancer` status
+
+| Field | Description |
+|---|---|
+| `ip` | Reserved IP written into the pool |
+| `fqdn` | FQDN returned by clusterbook (empty without DNS) |
+| `zone` | DNS zone returned by clusterbook |
+| `poolName` | Name of the generated `CiliumLoadBalancerIPPool` |
+| `conditions[type=Ready]` | `True` after a successful reconcile |
+
 ## KCL deploy profile
 
 Controls the operator's own Deployment. See [`tests/kcl-deploy-profile.yaml`](https://github.com/stuttgart-things/clusterbook-operator/blob/main/tests/kcl-deploy-profile.yaml).
