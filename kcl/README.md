@@ -1,0 +1,94 @@
+# KCL Deployment — clusterbook-operator
+
+KCL module for rendering the Kubernetes manifests that deploy the
+clusterbook-operator controller.
+
+## Resources
+
+| Resource | Name | Description |
+|---|---|---|
+| Namespace | `clusterbook-system` | Operator namespace |
+| ServiceAccount | `clusterbook-operator` | Pod identity |
+| ClusterRole | `clusterbook-operator` | Watch ClusterbookCluster, read ClusterbookProviderConfig, manage Secrets, emit Events, hold leader-election Leases |
+| ClusterRoleBinding | `clusterbook-operator` | Binds the SA to the ClusterRole |
+| Deployment | `clusterbook-operator` | Controller workload (distroless, non-root, liveness/readiness probes) |
+
+CRDs are **not** rendered by this module — they ship as generated YAML
+under `config/crd/` (produced by `controller-gen`) and must be applied
+separately before the controller starts.
+
+## Prerequisites
+
+- [KCL CLI](https://kcl-lang.io/) v0.11+
+- `kubectl` with a valid `KUBECONFIG` pointing at the management cluster (where ArgoCD runs)
+- CRDs from `config/crd/` already applied
+
+## Render manifests
+
+```bash
+kcl run kcl/
+```
+
+## Deploy with defaults
+
+```bash
+kcl run kcl/ | python3 -c "
+import sys, yaml
+data = yaml.safe_load(sys.stdin)
+for m in data.get('manifests', []):
+    if m: print('---'); print(yaml.dump(m))
+" | kubectl apply -f -
+```
+
+## Deploy with overrides
+
+Override schema defaults via `-D config.<field>=<value>`:
+
+```bash
+kcl run kcl/ \
+  -D config.image=ghcr.io/stuttgart-things/clusterbook-operator:v0.1.0 \
+  -D config.namespace=argocd \
+  -D config.replicas=2 \
+| python3 -c "
+import sys, yaml
+data = yaml.safe_load(sys.stdin)
+for m in data.get('manifests', []):
+    if m: print('---'); print(yaml.dump(m))
+" | kubectl apply -f -
+```
+
+A minimal profile is also available at `tests/kcl-deploy-profile.yaml`
+and is used by the Release workflow to render and push a kustomize OCI
+bundle on every tag.
+
+## Configuration reference
+
+| Parameter | Default | Description |
+|---|---|---|
+| `config.name` | `clusterbook-operator` | Resource name prefix |
+| `config.namespace` | `clusterbook-system` | Operator namespace |
+| `config.image` | `ghcr.io/stuttgart-things/clusterbook-operator:latest` | Controller image |
+| `config.imagePullPolicy` | `IfNotPresent` | Image pull policy |
+| `config.replicas` | `1` | Pod replicas |
+| `config.cpuRequest` | `50m` | CPU request |
+| `config.cpuLimit` | `500m` | CPU limit |
+| `config.memoryRequest` | `64Mi` | Memory request |
+| `config.memoryLimit` | `256Mi` | Memory limit |
+| `config.metricsPort` | `8080` | Prometheus metrics port |
+| `config.healthPort` | `8081` | Health/readiness probe port |
+| `config.labels` | `{}` | Extra labels on all resources |
+| `config.annotations` | `{}` | Extra annotations on the Deployment pod template |
+
+## Layout
+
+```
+kcl/
+├── kcl.mod            # module + k8s dependency
+├── schema.k           # ClusterbookOperator schema + validation
+├── labels.k           # config instance + option() overrides + common/selector labels
+├── main.k             # entrypoint — exports manifests[]
+├── namespace.k
+├── serviceaccount.k
+├── rbac.k             # ClusterRole + ClusterRoleBinding
+└── deploy.k           # Deployment
+```
