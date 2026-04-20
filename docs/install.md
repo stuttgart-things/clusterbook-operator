@@ -1,29 +1,20 @@
 # Install
 
-From v0.4.0 onward the kustomize OCI bundle includes the CRDs — one `kubectl apply -k` installs everything.
+From v0.4.0 onward the kustomize OCI bundle includes the CRDs — one `kubectl apply -k` on the pulled bundle installs everything.
 
 ## Prerequisites
 
 - A Kubernetes cluster with ArgoCD installed in the `argocd` namespace
-- One of: `kustomize` ≥ v5.4, `flux` CLI, or `oras`
+- An OCI-aware puller: `flux` CLI or `oras`
 - Network access from the cluster to `ghcr.io`
+
+> `kubectl` alone cannot pull OCI artifacts, and `kustomize build oci://…` is **not** supported by the kustomize CLI (as of v5.8). The pull step always needs a separate tool.
 
 ## Install
 
 Pick whichever option matches your tooling — all three produce the same result.
 
-### Option A — `kustomize` (no intermediate files)
-
-```bash
-kustomize build oci://ghcr.io/stuttgart-things/clusterbook-operator-kustomize:v0.6.0 \
-  | kubectl apply -f -
-
-kubectl -n clusterbook-system rollout status deploy/clusterbook-operator --timeout=120s
-```
-
-Requires `kustomize` v5.4+ (native OCI support). Nothing hits local disk.
-
-### Option B — `flux` CLI
+### Option A — `flux` CLI
 
 ```bash
 flux pull artifact oci://ghcr.io/stuttgart-things/clusterbook-operator-kustomize:v0.6.0 --output /tmp/cbk
@@ -32,7 +23,7 @@ kubectl apply -k /tmp/cbk
 kubectl -n clusterbook-system rollout status deploy/clusterbook-operator --timeout=120s
 ```
 
-### Option C — `oras`
+### Option B — `oras`
 
 ```bash
 oras pull ghcr.io/stuttgart-things/clusterbook-operator-kustomize:v0.6.0 -o /tmp/cbk
@@ -41,7 +32,7 @@ kubectl apply -k /tmp/cbk
 kubectl -n clusterbook-system rollout status deploy/clusterbook-operator --timeout=120s
 ```
 
-### Option D — GitOps via flux-kustomize-controller
+### Option C — GitOps via flux-kustomize-controller
 
 Continuously reconciles from the OCI registry, so upgrades happen automatically when a new tag is pushed.
 
@@ -72,7 +63,7 @@ spec:
   prune: true
 ```
 
-The bundle ships:
+## What's inside the bundle
 
 - 2 `CustomResourceDefinition` — `ClusterbookCluster`, `ClusterbookProviderConfig`
 - `Namespace clusterbook-system`
@@ -83,7 +74,6 @@ The bundle ships:
 ## Verify
 
 ```bash
-# Pod Ready, probes green
 kubectl -n clusterbook-system get pods
 kubectl -n clusterbook-system logs deploy/clusterbook-operator | tail
 ```
@@ -95,20 +85,13 @@ Expected log line from controller-runtime: `Starting workers`.
 Same command with a newer tag. Rolling update in place.
 
 ```bash
-kustomize build oci://ghcr.io/stuttgart-things/clusterbook-operator-kustomize:<new-version> \
-  | kubectl apply -f -
+flux pull artifact oci://ghcr.io/stuttgart-things/clusterbook-operator-kustomize:<new-version> --output /tmp/cbk
+kubectl apply -k /tmp/cbk
 ```
-
-(Or swap in the `flux` / `oras` / flux-kustomize-controller variant from above.)
 
 ## Uninstall
 
 ```bash
-# If you installed via Option A
-kustomize build oci://ghcr.io/stuttgart-things/clusterbook-operator-kustomize:v0.6.0 \
-  | kubectl delete -f -
-
-# If you pulled to /tmp/cbk (Option B or C)
 kubectl delete -k /tmp/cbk
 ```
 
