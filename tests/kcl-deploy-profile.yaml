@@ -1,0 +1,4 @@
+config.image: ghcr.io/stuttgart-things/clusterbook-operator:latest
+config.namespace: clusterbook-system
+config.replicas: 1
+config.imagePullPolicy: IfNotPresent
