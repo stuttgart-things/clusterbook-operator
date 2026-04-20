@@ -1,0 +1,200 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: clusterbookclusters.clusterbook.stuttgart-things.com
+spec:
+  group: clusterbook.stuttgart-things.com
+  names:
+    kind: ClusterbookCluster
+    listKind: ClusterbookClusterList
+    plural: clusterbookclusters
+    shortNames:
+    - cbkc
+    singular: clusterbookcluster
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.clusterName
+      name: Cluster
+      type: string
+    - jsonPath: .status.ip
+      name: IP
+      type: string
+    - jsonPath: .status.fqdn
+      name: FQDN
+      type: string
+    - jsonPath: .status.secretName
+      name: Secret
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              argocdNamespace:
+                description: |-
+                  ArgoCDNamespace is where the generated cluster Secret is written.
+                  Defaults to "argocd".
+                type: string
+              clusterName:
+                description: |-
+                  ClusterName is the cluster identifier registered in clusterbook.
+                  Used as the ArgoCD cluster name and as the IP reservation key.
+                type: string
+              createDNS:
+                description: CreateDNS asks clusterbook to create a wildcard DNS record.
+                type: boolean
+              kubeconfigSecretRef:
+                description: |-
+                  KubeconfigSecretRef references a Secret holding the target cluster's
+                  kubeconfig. The controller extracts server/CA/auth from it.
+                properties:
+                  key:
+                    description: Key defaults to "kubeconfig".
+                    type: string
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              labels:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Labels are copied onto the generated cluster Secret. Use them as
+                  selectors in ApplicationSet cluster generators.
+                type: object
+              networkKey:
+                description: NetworkKey is the clusterbook network pool (e.g. "10.31.103").
+                type: string
+              providerConfigRef:
+                description: |-
+                  ProviderConfigRef points to a ClusterbookProviderConfig with the
+                  clusterbook API URL and TLS options.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              releaseOnDelete:
+                description: ReleaseOnDelete releases the clusterbook IP when the
+                  CR is deleted.
+                type: boolean
+              serverPort:
+                description: ServerPort is the port appended to the ArgoCD server
+                  URL. Defaults to 6443.
+                type: integer
+              useFQDNAsServer:
+                description: |-
+                  UseFQDNAsServer builds the ArgoCD server URL from the FQDN instead
+                  of the reserved IP. Requires CreateDNS=true.
+                type: boolean
+            required:
+            - clusterName
+            - kubeconfigSecretRef
+            - networkKey
+            - providerConfigRef
+            type: object
+          status:
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              fqdn:
+                type: string
+              ip:
+                type: string
+              secretName:
+                type: string
+              zone:
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
