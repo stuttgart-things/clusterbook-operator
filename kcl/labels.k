@@ -9,6 +9,7 @@ _image = option("config.image")
 _namespace = option("config.namespace")
 _replicas = option("config.replicas")
 _imagePullPolicy = option("config.imagePullPolicy")
+_trustBundleConfigMap = option("config.trustBundleConfigMap")
 
 config: schema.ClusterbookOperator = schema.ClusterbookOperator {
     if _image:
@@ -19,6 +20,8 @@ config: schema.ClusterbookOperator = schema.ClusterbookOperator {
         replicas = int(_replicas)
     if _imagePullPolicy:
         imagePullPolicy = _imagePullPolicy
+    if _trustBundleConfigMap:
+        trustBundleConfigMap = _trustBundleConfigMap
 }
 
 commonLabels = {
