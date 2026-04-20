@@ -42,6 +42,12 @@ deployment = {
                             "--metrics-bind-address=:{}".format(config.metricsPort)
                             "--health-probe-bind-address=:{}".format(config.healthPort)
                         ]
+                        env: [
+                            {
+                                name: "SSL_CERT_DIR"
+                                value: "/etc/ssl/custom"
+                            }
+                        ] if config.trustBundleConfigMap else []
                         ports: [
                             {
                                 name: "metrics"
@@ -88,6 +94,14 @@ deployment = {
                                 drop: ["ALL"]
                             }
                         }
+                        volumeMounts: [
+                            {
+                                name: "trust-bundle"
+                                mountPath: "/etc/ssl/custom/trust-bundle.pem"
+                                subPath: "trust-bundle.pem"
+                                readOnly: True
+                            }
+                        ] if config.trustBundleConfigMap else []
                     }
                 ]
                 securityContext: {
@@ -99,6 +113,15 @@ deployment = {
                         type: "RuntimeDefault"
                     }
                 }
+                volumes: [
+                    {
+                        name: "trust-bundle"
+                        configMap: {
+                            name: config.trustBundleConfigMap
+                            optional: True
+                        }
+                    }
+                ] if config.trustBundleConfigMap else []
                 affinity: {
                     podAntiAffinity: {
                         preferredDuringSchedulingIgnoredDuringExecution: [
