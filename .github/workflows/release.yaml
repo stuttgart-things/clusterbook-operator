@@ -2,89 +2,123 @@
 name: Release
 on:
   workflow_run:
-    workflows: ["Build, Push & Scan Container Image"]
+    workflows: ["CI - Build & Test"]
     types: [completed]
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
-  semantic-release:
-    name: Semantic Release
+  release:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
-    uses: stuttgart-things/github-workflow-templates/.github/workflows/call-go-release.yaml@main
-    with:
-      runs-on: ubuntu-latest
-      stage-image: false
-      push-kustomize: true
-      kcl-source-dir: kcl
-      kcl-profile-file: tests/kcl-deploy-profile.yaml
-      kustomize-oci-repo: ghcr.io/stuttgart-things/clusterbook-operator-kustomize
-    secrets: inherit # pragma: allowlist secret
-
-  publish:
-    name: Publish Image to GHCR
-    needs: semantic-release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    runs-on: dagger-labul
+    environment: k8s
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          submodules: true
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
 
-      - name: Get latest version tag
-        id: meta
+      - name: Get version before release
+        id: version-before
         run: |
           git fetch --tags
-          VERSION=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
-          COMMIT=$(git rev-parse --short HEAD)
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "commit=${COMMIT}" >> $GITHUB_OUTPUT
-          echo "Latest version: ${VERSION}, commit: ${COMMIT}"
+          BEFORE=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "none")
+          echo "version=$BEFORE" >> $GITHUB_OUTPUT
 
-      - name: Build & push image (version tag)
-        if: steps.meta.outputs.version != ''
-        uses: dagger/dagger-for-github@v7
+      - name: Semantic release
+        uses: dagger/dagger-for-github@v8.4.0
         with:
           version: "0.20.0"
           verb: call
-          module: github.com/stuttgart-things/blueprints/kubernetes-microservice@v1.71.0
+          module: github.com/stuttgart-things/dagger/release@v0.86.0
           args: >-
-            bake-image
+            semantic
             --src .
-            --repository-name stuttgart-things/clusterbook-operator
-            --tag ${{ steps.meta.outputs.version }}
-            --registry-url ghcr.io
-            --registry-username env:GITHUB_ACTOR
-            --registry-password env:GITHUB_TOKEN
-            --dockerfile cluster/images/clusterbook-operator/Dockerfile
+            --token env:GITHUB_TOKEN
+            --dry-run-only=false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_ACTOR: ${{ github.actor }}
-          DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
 
-      - name: Build & push image (latest tag)
-        uses: dagger/dagger-for-github@v7
+      - name: Get new version
+        id: version-after
+        run: |
+          git fetch --tags
+          AFTER=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || echo "none")
+          echo "version=$AFTER" >> $GITHUB_OUTPUT
+          if [ "$AFTER" != "${{ steps.version-before.outputs.version }}" ] && [ "$AFTER" != "none" ]; then
+            echo "new_release=true" >> $GITHUB_OUTPUT
+            echo "New release: $AFTER"
+          else
+            echo "new_release=false" >> $GITHUB_OUTPUT
+            echo "No new release"
+          fi
+
+      - name: Login to GHCR
+        if: steps.version-after.outputs.new_release == 'true'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build and push versioned image to GHCR
+        if: steps.version-after.outputs.new_release == 'true'
+        run: |
+          VERSION="${{ steps.version-after.outputs.version }}"
+          docker build \
+            -f cluster/images/clusterbook-operator/Dockerfile \
+            -t ghcr.io/${{ github.repository }}:${VERSION} \
+            -t ghcr.io/${{ github.repository }}:latest \
+            .
+          docker push ghcr.io/${{ github.repository }}:${VERSION}
+          docker push ghcr.io/${{ github.repository }}:latest
+
+      - name: Push kustomize base
+        if: steps.version-after.outputs.new_release == 'true'
+        uses: dagger/dagger-for-github@v8.4.0
         with:
           version: "0.20.0"
           verb: call
-          module: github.com/stuttgart-things/blueprints/kubernetes-microservice@v1.71.0
+          module: github.com/stuttgart-things/dagger/kcl@v0.86.0
           args: >-
-            bake-image
-            --src .
-            --repository-name stuttgart-things/clusterbook-operator
-            --tag latest
-            --registry-url ghcr.io
-            --registry-username env:GITHUB_ACTOR
-            --registry-password env:GITHUB_TOKEN
-            --dockerfile cluster/images/clusterbook-operator/Dockerfile
+            push-kustomize-base
+            --source ./kcl
+            --parameters-file ./tests/kcl-deploy-profile.yaml
+            --address ghcr.io/stuttgart-things/clusterbook-operator-kustomize
+            --tag ${{ steps.version-after.outputs.version }}
+            --user env:GITHUB_USER
+            --password env:GITHUB_TOKEN
         env:
+          GITHUB_USER: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_ACTOR: ${{ github.actor }}
-          DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+
+      - name: Update release notes
+        if: steps.version-after.outputs.new_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version-after.outputs.version }}"
+          EXISTING_BODY=$(gh release view "$VERSION" --json body --jq '.body')
+          ARTIFACTS="### Artifacts\n\n| Artifact | Reference |\n|----------|-----------|"
+          ARTIFACTS="${ARTIFACTS}\n| **Image** | \`ghcr.io/${{ github.repository }}:${VERSION}\` |"
+          ARTIFACTS="${ARTIFACTS}\n| **Kustomize** | \`ghcr.io/stuttgart-things/clusterbook-operator-kustomize:${VERSION}\` |"
+          gh release edit "$VERSION" --notes "$(printf '%s\n\n%b' "$EXISTING_BODY" "$ARTIFACTS")"
+
+      - name: Release summary
+        run: |
+          if [ "${{ steps.version-after.outputs.new_release }}" == "true" ]; then
+            VERSION="${{ steps.version-after.outputs.version }}"
+            echo "## Release $VERSION" >> $GITHUB_STEP_SUMMARY
+            echo "| Artifact | Reference |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|-----------|" >> $GITHUB_STEP_SUMMARY
+            echo "| **Image** | \`ghcr.io/${{ github.repository }}:$VERSION\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Kustomize** | \`ghcr.io/stuttgart-things/clusterbook-operator-kustomize:$VERSION\` |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## No Release" >> $GITHUB_STEP_SUMMARY
+            echo "No new version created by semantic-release." >> $GITHUB_STEP_SUMMARY
+          fi
