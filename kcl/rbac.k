@@ -43,6 +43,26 @@ clusterRole = {
             verbs: ["update"]
         }
         {
+            apiGroups: ["clusterbook.stuttgart-things.com"]
+            resources: ["clusterbookloadbalancers"]
+            verbs: ["get", "list", "watch", "update", "patch"]
+        }
+        {
+            apiGroups: ["clusterbook.stuttgart-things.com"]
+            resources: ["clusterbookloadbalancers/status"]
+            verbs: ["get", "update", "patch"]
+        }
+        {
+            apiGroups: ["clusterbook.stuttgart-things.com"]
+            resources: ["clusterbookloadbalancers/finalizers"]
+            verbs: ["update"]
+        }
+        {
+            apiGroups: ["cilium.io"]
+            resources: ["ciliumloadbalancerippools"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+        }
+        {
             apiGroups: [""]
             resources: ["secrets"]
             verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

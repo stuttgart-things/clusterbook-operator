@@ -1,0 +1,30 @@
+# Minimal CRD for CiliumLoadBalancerIPPool used by envtest only.
+# The real CRD lives in upstream Cilium (cilium.io/v2alpha1). We only
+# need the API to accept objects of this kind during controller tests.
+# Using x-kubernetes-preserve-unknown-fields to avoid pinning to a
+# specific Cilium schema version.
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: ciliumloadbalancerippools.cilium.io
+spec:
+  group: cilium.io
+  scope: Cluster
+  names:
+    kind: CiliumLoadBalancerIPPool
+    listKind: CiliumLoadBalancerIPPoolList
+    plural: ciliumloadbalancerippools
+    singular: ciliumloadbalancerippool
+    shortNames:
+      - ippool
+  versions:
+    - name: v2alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+      subresources:
+        status: {}

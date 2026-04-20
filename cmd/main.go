@@ -41,7 +41,11 @@ func main() {
 	}
 
 	if err := (&controller.Reconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
-		ctrl.Log.Error(err, "setup reconciler")
+		ctrl.Log.Error(err, "setup ClusterbookCluster reconciler")
+		os.Exit(1)
+	}
+	if err := (&controller.LoadBalancerReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "setup ClusterbookLoadBalancer reconciler")
 		os.Exit(1)
 	}
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

@@ -1,0 +1,30 @@
+# Reserve a LoadBalancer IP from clusterbook and materialise it as a
+# CiliumLoadBalancerIPPool so Services matching the selector get it
+# assigned. Optional createDNS=true asks clusterbook/PowerDNS to add a
+# wildcard DNS record — useful for an Ingress / Gateway API frontend.
+---
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookProviderConfig
+metadata:
+  name: default
+spec:
+  apiURL: https://clusterbook.example.com
+  insecureSkipVerify: false
+---
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookLoadBalancer
+metadata:
+  name: ingress-main
+spec:
+  networkKey: "10.31.101"
+  name: ingress-main          # reservation key in clusterbook
+  createDNS: true             # optional wildcard DNS record
+  providerConfigRef:
+    name: default
+  ciliumPool:
+    # poolName defaults to "<spec.name>-pool" when empty
+    poolName: ingress-main-pool
+    serviceSelector:
+      matchLabels:
+        app.kubernetes.io/name: ingress-nginx
+  releaseOnDelete: true
