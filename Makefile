@@ -30,7 +30,7 @@ envtest:
 
 .PHONY: test
 test: envtest
-	KUBEBUILDER_ASSETS="$$(setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test ./...
+	KUBEBUILDER_ASSETS="$$(setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -race ./...
 
 .PHONY: run
 run:
