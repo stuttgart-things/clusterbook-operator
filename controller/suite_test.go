@@ -67,13 +67,23 @@ type fakeClusterbook struct {
 	server *httptest.Server
 
 	mu       sync.Mutex
-	reserved map[string]string // cluster name -> IP
+	reserved map[string]string  // cluster name -> IP
+	state    map[string]ipState // IP -> current state
 	released []string
-	fqdn     string // returned by /clusters/{name}; empty means "no DNS"
+	updates  []cbkclient.ReserveRequest // every UpdateIP body, in order
+	fqdn     string                     // returned by /clusters/{name}; empty means "no DNS"
+}
+
+type ipState struct {
+	cluster   string
+	createDNS bool
 }
 
 func newFakeClusterbook() *fakeClusterbook {
-	f := &fakeClusterbook{reserved: map[string]string{}}
+	f := &fakeClusterbook{
+		reserved: map[string]string{},
+		state:    map[string]ipState{},
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/networks/", f.handleNetworks)
 	mux.HandleFunc("/api/v1/clusters/", f.handleClusters)
@@ -100,6 +110,7 @@ func (f *fakeClusterbook) handleNetworks(w http.ResponseWriter, r *http.Request)
 		if !ok {
 			ip = "10.0.0.42"
 			f.reserved[req.Cluster] = ip
+			f.state[ip] = ipState{cluster: req.Cluster, createDNS: req.CreateDNS}
 		}
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
@@ -114,9 +125,51 @@ func (f *fakeClusterbook) handleNetworks(w http.ResponseWriter, r *http.Request)
 		f.released = append(f.released, req.IP)
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
+	case "ips":
+		switch {
+		case len(parts) == 5 && r.Method == http.MethodGet:
+			f.handleListIPs(w, r)
+		case len(parts) == 6 && r.Method == http.MethodPut:
+			f.handleUpdateIP(w, r, parts[5])
+		default:
+			http.Error(w, "bad ips path", http.StatusBadRequest)
+		}
 	default:
 		http.Error(w, "unknown action", http.StatusNotFound)
 	}
+}
+
+func (f *fakeClusterbook) handleListIPs(w http.ResponseWriter, _ *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]cbkclient.IPInfo, 0, len(f.state))
+	for ip, st := range f.state {
+		status := "ASSIGNED"
+		if st.createDNS {
+			status = "ASSIGNED:DNS"
+		}
+		out = append(out, cbkclient.IPInfo{
+			IP:      ip,
+			Cluster: st.cluster,
+			Status:  status,
+		})
+	}
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (f *fakeClusterbook) handleUpdateIP(w http.ResponseWriter, r *http.Request, ip string) {
+	var req cbkclient.ReserveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	f.updates = append(f.updates, req)
+	st := f.state[ip]
+	st.createDNS = req.CreateDNS
+	f.state[ip] = st
+	f.mu.Unlock()
+	w.WriteHeader(http.StatusOK)
 }
 
 func (f *fakeClusterbook) handleClusters(w http.ResponseWriter, r *http.Request) {
@@ -133,4 +186,19 @@ func (f *fakeClusterbook) releasedCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.released)
+}
+
+func (f *fakeClusterbook) updateCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.updates)
+}
+
+func (f *fakeClusterbook) lastUpdate() cbkclient.ReserveRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.updates) == 0 {
+		return cbkclient.ReserveRequest{}
+	}
+	return f.updates[len(f.updates)-1]
 }

@@ -216,6 +216,77 @@ func TestReconcileFinalizeReleasesIP(t *testing.T) {
 	}
 }
 
+func TestReconcileDriftTriggersUpdate(t *testing.T) {
+	ctx := context.Background()
+	ensureArgoNamespace(ctx, t)
+
+	fake := newFakeClusterbook()
+	defer fake.server.Close()
+
+	mustCreate(ctx, t, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "kc-drift", Namespace: "argocd"},
+		Data:       map[string][]byte{"kubeconfig": []byte(fakeKubeconfig)},
+	})
+	mustCreate(ctx, t, &argov1.ClusterbookProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "pc-drift"},
+		Spec:       argov1.ClusterbookProviderConfigSpec{APIURL: fake.server.URL},
+	})
+	cr := &argov1.ClusterbookCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "drift-cluster"},
+		Spec: argov1.ClusterbookClusterSpec{
+			NetworkKey:          "10.0.0",
+			ClusterName:         "drift-cluster",
+			CreateDNS:           false,
+			KubeconfigSecretRef: argov1.SecretKeyRef{Name: "kc-drift", Namespace: "argocd"},
+			ProviderConfigRef:   corev1.LocalObjectReference{Name: "pc-drift"},
+			ArgoCDNamespace:     "argocd",
+		},
+	}
+	mustCreate(ctx, t, cr)
+
+	r := &Reconciler{Client: k8sClient, Scheme: scheme}
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "drift-cluster"}}); err != nil {
+		t.Fatalf("initial reconcile: %v", err)
+	}
+	if got := fake.updateCount(); got != 0 {
+		t.Errorf("initial update count = %d, want 0 (createDNS matches spec)", got)
+	}
+
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "drift-cluster"}, cr); err != nil {
+		t.Fatalf("refetch CR: %v", err)
+	}
+	cr.Spec.CreateDNS = true
+	if err := k8sClient.Update(ctx, cr); err != nil {
+		t.Fatalf("mutate CR: %v", err)
+	}
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "drift-cluster"}}); err != nil {
+		t.Fatalf("post-drift reconcile: %v", err)
+	}
+
+	if got := fake.updateCount(); got != 1 {
+		t.Fatalf("post-drift update count = %d, want 1", got)
+	}
+	last := fake.lastUpdate()
+	if !last.CreateDNS {
+		t.Errorf("UpdateIP request CreateDNS = false, want true")
+	}
+	if last.Status != "ASSIGNED:DNS" {
+		t.Errorf("UpdateIP request Status = %q, want ASSIGNED:DNS", last.Status)
+	}
+	if last.Cluster != "drift-cluster" {
+		t.Errorf("UpdateIP request Cluster = %q, want drift-cluster", last.Cluster)
+	}
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "drift-cluster"}}); err != nil {
+		t.Fatalf("steady-state reconcile: %v", err)
+	}
+	if got := fake.updateCount(); got != 1 {
+		t.Errorf("steady-state update count = %d, want still 1 (no spurious update)", got)
+	}
+}
+
 func TestReconcileReleaseOnDeleteOff(t *testing.T) {
 	ctx := context.Background()
 	ensureArgoNamespace(ctx, t)
