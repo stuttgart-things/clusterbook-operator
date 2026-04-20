@@ -71,18 +71,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 
-	resv, err := api.ReserveIPs(ctx, cr.Spec.NetworkKey, cbkclient.ReserveRequest{
-		Cluster:   cr.Spec.ClusterName,
-		Count:     1,
-		CreateDNS: cr.Spec.CreateDNS,
-	})
+	ip, err := r.ensureReservation(ctx, api, &cr)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("reserve IP: %w", err)
+		return ctrl.Result{}, err
 	}
-	if len(resv.IPs) == 0 {
-		return ctrl.Result{}, fmt.Errorf("clusterbook returned no IPs")
-	}
-	ip := resv.IPs[0]
 
 	if err := r.reconcileDNSDrift(ctx, api, &cr, ip); err != nil {
 		return ctrl.Result{}, err
@@ -281,6 +273,36 @@ func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.Clusterboo
 		return nil, err
 	}
 	return secret, nil
+}
+
+// ensureReservation returns the IP already reserved for this cluster in
+// clusterbook, reserving a fresh one only when no existing reservation is
+// found. This is defensive: the clusterbook API is not strictly idempotent
+// by cluster name, so calling Reserve on every reconcile tick can drain
+// the pool when something else (e.g. a stuck reconcile loop) retries
+// aggressively.
+func (r *Reconciler) ensureReservation(ctx context.Context, api *cbkclient.Client, cr *argov1.ClusterbookCluster) (string, error) {
+	existing, err := api.GetIPs(ctx, cr.Spec.NetworkKey)
+	if err != nil {
+		return "", fmt.Errorf("list IPs: %w", err)
+	}
+	for _, e := range existing {
+		if e.Cluster == cr.Spec.ClusterName {
+			return e.IP, nil
+		}
+	}
+	resv, err := api.ReserveIPs(ctx, cr.Spec.NetworkKey, cbkclient.ReserveRequest{
+		Cluster:   cr.Spec.ClusterName,
+		Count:     1,
+		CreateDNS: cr.Spec.CreateDNS,
+	})
+	if err != nil {
+		return "", fmt.Errorf("reserve IP: %w", err)
+	}
+	if len(resv.IPs) == 0 {
+		return "", fmt.Errorf("clusterbook returned no IPs")
+	}
+	return resv.IPs[0], nil
 }
 
 // reconcileDNSDrift compares the observed createDNS state on the clusterbook

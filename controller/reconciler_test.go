@@ -398,3 +398,44 @@ func TestReconcileParallel(t *testing.T) {
 		t.Errorf("expected %d distinct reserved IPs, got %d: %v", len(names), len(unique), unique)
 	}
 }
+
+func TestReconcileReservesOnlyOnce(t *testing.T) {
+	ctx := context.Background()
+	ensureArgoNamespace(ctx, t)
+
+	fake := newFakeClusterbook()
+	defer fake.server.Close()
+
+	mustCreate(ctx, t, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "kc-once", Namespace: "argocd"},
+		Data:       map[string][]byte{"kubeconfig": []byte(fakeKubeconfig)},
+	})
+	mustCreate(ctx, t, &argov1.ClusterbookProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "pc-once"},
+		Spec:       argov1.ClusterbookProviderConfigSpec{APIURL: fake.server.URL},
+	})
+	mustCreate(ctx, t, &argov1.ClusterbookCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "once"},
+		Spec: argov1.ClusterbookClusterSpec{
+			NetworkKey:          "10.0.0",
+			ClusterName:         "once",
+			KubeconfigSecretRef: argov1.SecretKeyRef{Name: "kc-once", Namespace: "argocd"},
+			ProviderConfigRef:   corev1.LocalObjectReference{Name: "pc-once"},
+			ArgoCDNamespace:     "argocd",
+		},
+	})
+
+	r := &Reconciler{Client: k8sClient, Scheme: scheme}
+	for i := 0; i < 5; i++ {
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "once"}}); err != nil {
+			t.Fatalf("reconcile %d: %v", i, err)
+		}
+	}
+
+	if got := fake.reserveCount(); got != 1 {
+		t.Errorf("reserve count = %d, want 1 (the fake hands out fresh IPs on every call — the operator should only invoke Reserve once)", got)
+	}
+	if n := len(fake.reservedIPs()); n != 1 {
+		t.Errorf("unique reserved IPs = %d, want 1", n)
+	}
+}

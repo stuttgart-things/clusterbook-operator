@@ -67,13 +67,14 @@ func TestMain(m *testing.M) {
 type fakeClusterbook struct {
 	server *httptest.Server
 
-	mu       sync.Mutex
-	reserved map[string]string  // cluster name -> IP
-	state    map[string]ipState // IP -> current state
-	released []string
-	updates  []cbkclient.ReserveRequest // every UpdateIP body, in order
-	fqdn     string                     // returned by /clusters/{name}; empty means "no DNS"
-	nextIP   int                        // next host octet to hand out (starts at 42)
+	mu           sync.Mutex
+	reserved     map[string]string  // cluster name -> IP
+	state        map[string]ipState // IP -> current state
+	released     []string
+	updates      []cbkclient.ReserveRequest // every UpdateIP body, in order
+	fqdn         string                     // returned by /clusters/{name}; empty means "no DNS"
+	nextIP       int                        // next host octet to hand out (starts at 42)
+	reserveCalls int                        // count of /reserve requests received
 }
 
 type ipState struct {
@@ -109,13 +110,15 @@ func (f *fakeClusterbook) handleNetworks(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		f.mu.Lock()
-		ip, ok := f.reserved[req.Cluster]
-		if !ok {
-			ip = fmt.Sprintf("10.0.0.%d", f.nextIP)
-			f.nextIP++
-			f.reserved[req.Cluster] = ip
-			f.state[ip] = ipState{cluster: req.Cluster, createDNS: req.CreateDNS}
-		}
+		f.reserveCalls++
+		// Adversarial behaviour: every /reserve hands out a fresh IP
+		// even when this cluster already has one. Mirrors real-world
+		// clusterbook behaviour observed during smoke testing. The
+		// operator must defend itself by calling GetIPs before Reserve.
+		ip := fmt.Sprintf("10.0.0.%d", f.nextIP)
+		f.nextIP++
+		f.reserved[req.Cluster] = ip
+		f.state[ip] = ipState{cluster: req.Cluster, createDNS: req.CreateDNS}
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(cbkclient.ReserveResponse{IPs: []string{ip}, Status: "ASSIGNED"})
@@ -190,6 +193,12 @@ func (f *fakeClusterbook) releasedCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.released)
+}
+
+func (f *fakeClusterbook) reserveCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reserveCalls
 }
 
 func (f *fakeClusterbook) reservedIPs() []string {
