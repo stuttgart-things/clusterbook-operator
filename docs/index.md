@@ -1,8 +1,34 @@
 # clusterbook-operator
 
-A Kubernetes operator that turns [clusterbook](https://github.com/stuttgart-things/clusterbook) entries into [ArgoCD](https://argo-cd.readthedocs.io/) cluster Secrets so that ApplicationSets can fan out across fleets via the built-in **Cluster** generator — no custom generator plugin required.
+A Kubernetes operator for [clusterbook](https://github.com/stuttgart-things/clusterbook) — reserves IPs (and optional PowerDNS records) and turns them into the Kubernetes objects that actually consume them.
 
-## What it does
+Two CRDs, two distinct use cases:
+
+| CRD | Use case | Output |
+|---|---|---|
+| **`ClusterbookLoadBalancer`** | Give a Cilium LoadBalancer Service a stable IP (+ optional DNS) | `cilium.io/v2alpha1 CiliumLoadBalancerIPPool` |
+| **`ClusterbookCluster`** | Register a Kubernetes cluster in ArgoCD with a clusterbook-backed IP/FQDN | `Secret` with `argocd.argoproj.io/secret-type=cluster` |
+
+Both share `ClusterbookProviderConfig` for clusterbook API endpoint + TLS options, both participate in the same clusterbook reservation pool, both annotate their output with `clusterbook.stuttgart-things.com/ip` / `/fqdn` / `/zone` for downstream discovery.
+
+## `ClusterbookLoadBalancer` — Cilium LB IPAM
+
+```
+ClusterbookLoadBalancer (CR)   -->   CiliumLoadBalancerIPPool
+  networkKey                           name:    <spec.name>-pool
+  name                                 blocks:  [{cidr: <ip>/32}]
+  createDNS                            serviceSelector: <copied from spec>
+  ciliumPool.serviceSelector           annotations:
+  providerConfigRef                      clusterbook.stuttgart-things.com/ip
+                                         clusterbook.stuttgart-things.com/fqdn
+                                         clusterbook.stuttgart-things.com/zone
+```
+
+Reserve an IP from clusterbook → create a CiliumLoadBalancerIPPool pinned to that IP → Cilium assigns it to any Service matching `serviceSelector`. With `createDNS: true`, clusterbook also creates a wildcard PowerDNS record for Ingress / Gateway API frontends.
+
+See [LoadBalancer](loadbalancer.md) for full usage.
+
+## `ClusterbookCluster` — declarative cluster registration in ArgoCD
 
 ```
 ClusterbookCluster (CR)         -->   Secret (argocd.argoproj.io/secret-type=cluster)
@@ -10,19 +36,23 @@ ClusterbookCluster (CR)         -->   Secret (argocd.argoproj.io/secret-type=clu
   clusterName                          server: https://<ip|fqdn>:6443
   createDNS                            config: {...from kubeconfigSecretRef...}
   kubeconfigSecretRef                  labels: <propagated from CR>
-  labels
-  providerConfigRef
+  labels                               annotations:
+  providerConfigRef                      clusterbook.stuttgart-things.com/ip
+                                         clusterbook.stuttgart-things.com/fqdn
+                                         clusterbook.stuttgart-things.com/zone
 ```
 
 On every reconcile:
 
 1. Resolve `providerConfigRef` — clusterbook API URL + TLS options.
-2. `ReserveIPs` against clusterbook (idempotent — returns the existing IP when the cluster already has one).
+2. Look up any existing reservation for `spec.clusterName` in clusterbook; reserve a new IP only if none exists.
 3. `GetClusterInfo` to pick up FQDN and zone.
-4. Detect DNS drift — if `spec.createDNS` no longer matches the clusterbook reservation, call `UpdateIP`.
+4. Detect DNS drift — if `spec.createDNS` no longer matches the clusterbook state, call `UpdateIP`.
 5. Load the kubeconfig from the referenced Secret, extract `server`, CA, and auth material, build the ArgoCD `config` JSON.
-6. Create or update `Secret cluster-<clusterName>` in the ArgoCD namespace with `argocd.argoproj.io/secret-type: cluster` plus the labels declared on the CR.
+6. Create or update `Secret cluster-<clusterName>` in the ArgoCD namespace.
 7. On deletion (finalizer): delete the Secret, then `ReleaseIPs` (best-effort, gated by `releaseOnDelete`).
+
+See [Usage](usage.md) for the full CR + ApplicationSet example.
 
 ## Why use this instead of `argocd cluster add`?
 
@@ -49,14 +79,15 @@ So: same end result (a cluster Secret ArgoCD consumes), but sourced from a decla
 | | Control plane | Typical use |
 |---|---|---|
 | **provider-clusterbook** | Crossplane | Reserve IPs / create DNS records from Crossplane Compositions, as part of a cluster-provisioning pipeline |
-| **clusterbook-operator** (this repo) | plain controller-runtime | Turn clusterbook entries into ArgoCD cluster Secrets so ApplicationSets pick them up |
+| **clusterbook-operator** (this repo) | plain controller-runtime | Turn clusterbook entries into CiliumLoadBalancerIPPools or ArgoCD cluster Secrets |
 
 The REST client at `pkg/client` was copied (not forked) from `provider-clusterbook/internal/client`. Both projects evolve independently against the clusterbook API.
 
 ## Quick links
 
 - [Install](install.md) — one `kubectl apply -k` on the OCI bundle
-- [Usage](usage.md) — `ClusterbookProviderConfig` + `ClusterbookCluster` CR examples, ApplicationSet wiring
-- [Configuration](configuration.md) — every `spec.*` field
+- [LoadBalancer](loadbalancer.md) — `ClusterbookLoadBalancer` CR and Cilium integration
+- [Usage](usage.md) — `ClusterbookCluster` + ApplicationSet wiring
+- [Configuration](configuration.md) — every `spec.*` field on both CRDs
 - [Smoke Test](smoke-test.md) — end-to-end validation on a real cluster
 - [Development](development.md) — `make test / generate / build`, envtest, release process
