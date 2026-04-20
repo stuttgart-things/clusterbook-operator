@@ -29,6 +29,10 @@ const (
 	argoSecretTypeValue  = "cluster"
 	defaultArgoNamespace = "argocd"
 	defaultPort          = 6443
+
+	annotationIP   = "clusterbook.stuttgart-things.com/ip"
+	annotationFQDN = "clusterbook.stuttgart-things.com/fqdn"
+	annotationZone = "clusterbook.stuttgart-things.com/zone"
 )
 
 type Reconciler struct {
@@ -93,7 +97,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, fmt.Errorf("extract kubeconfig: %w", err)
 	}
 
-	secret, err := r.upsertArgoSecret(ctx, &cr, server, argoCfg, caData)
+	secret, err := r.upsertArgoSecret(ctx, &cr, ip, info, server, argoCfg, caData)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("upsert argo secret: %w", err)
 	}
@@ -241,7 +245,7 @@ func argoSecretName(cr *argov1.ClusterbookCluster) string {
 	return "cluster-" + cr.Spec.ClusterName
 }
 
-func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.ClusterbookCluster, server string, cfgJSON, _ []byte) (*corev1.Secret, error) {
+func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.ClusterbookCluster, ip string, info *cbkclient.ClusterInfo, server string, cfgJSON, _ []byte) (*corev1.Secret, error) {
 	ns := cr.Spec.ArgoCDNamespace
 	if ns == "" {
 		ns = defaultArgoNamespace
@@ -250,6 +254,16 @@ func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.Clusterboo
 	labels := map[string]string{argoSecretTypeLabel: argoSecretTypeValue}
 	for k, v := range cr.Spec.Labels {
 		labels[k] = v
+	}
+
+	annotations := map[string]string{annotationIP: ip}
+	if info != nil {
+		if info.FQDN != "" {
+			annotations[annotationFQDN] = info.FQDN
+		}
+		if info.Zone != "" {
+			annotations[annotationZone] = info.Zone
+		}
 	}
 
 	secret := &corev1.Secret{
@@ -261,6 +275,12 @@ func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.Clusterboo
 		}
 		for k, v := range labels {
 			secret.Labels[k] = v
+		}
+		if secret.Annotations == nil {
+			secret.Annotations = map[string]string{}
+		}
+		for k, v := range annotations {
+			secret.Annotations[k] = v
 		}
 		secret.StringData = map[string]string{
 			"name":   cr.Spec.ClusterName,

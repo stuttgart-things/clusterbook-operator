@@ -96,6 +96,12 @@ func TestReconcileGoldenPath(t *testing.T) {
 	if argoSec.Labels["env"] != "test" {
 		t.Errorf("env label missing; got labels %v", argoSec.Labels)
 	}
+	if got := argoSec.Annotations["clusterbook.stuttgart-things.com/ip"]; got != "10.0.0.42" {
+		t.Errorf("ip annotation = %q, want 10.0.0.42", got)
+	}
+	if _, ok := argoSec.Annotations["clusterbook.stuttgart-things.com/fqdn"]; ok {
+		t.Errorf("fqdn annotation should be absent when createDNS=false; got annotations %v", argoSec.Annotations)
+	}
 	if got, want := string(argoSec.Data["server"]), "https://10.0.0.42:6443"; got != want {
 		t.Errorf("server = %q, want %q", got, want)
 	}
@@ -158,6 +164,12 @@ func TestReconcileUseFQDNAsServer(t *testing.T) {
 	}
 	if got, want := string(argoSec.Data["server"]), "https://mycluster.example.com:6443"; got != want {
 		t.Errorf("server = %q, want %q", got, want)
+	}
+	if got, want := argoSec.Annotations["clusterbook.stuttgart-things.com/fqdn"], "mycluster.example.com"; got != want {
+		t.Errorf("fqdn annotation = %q, want %q", got, want)
+	}
+	if got, want := argoSec.Annotations["clusterbook.stuttgart-things.com/zone"], "example.com"; got != want {
+		t.Errorf("zone annotation = %q, want %q", got, want)
 	}
 }
 
