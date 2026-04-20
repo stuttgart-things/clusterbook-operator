@@ -36,6 +36,12 @@ jobs:
       - name: Install envtest
         run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 
+      - name: Cache envtest binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/kubebuilder-envtest
+          key: envtest-${{ runner.os }}-1.31.0
+
       - name: Test
         run: |
           KUBEBUILDER_ASSETS=$(setup-envtest use 1.31.0 -p path)
