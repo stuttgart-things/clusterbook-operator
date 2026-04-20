@@ -1,0 +1,87 @@
+---
+name: Release
+on:
+  workflow_run:
+    workflows: ["Build, Push & Scan Container Image"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  semantic-release:
+    name: Semantic Release
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    uses: stuttgart-things/github-workflow-templates/.github/workflows/call-go-release.yaml@main
+    with:
+      runs-on: ubuntu-latest
+      stage-image: false
+      push-kustomize: false
+    secrets: inherit # pragma: allowlist secret
+
+  publish:
+    name: Publish Image to GHCR
+    needs: semantic-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Get latest version tag
+        id: meta
+        run: |
+          git fetch --tags
+          VERSION=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          COMMIT=$(git rev-parse --short HEAD)
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "commit=${COMMIT}" >> $GITHUB_OUTPUT
+          echo "Latest version: ${VERSION}, commit: ${COMMIT}"
+
+      - name: Build & push image (version tag)
+        if: steps.meta.outputs.version != ''
+        uses: dagger/dagger-for-github@v6
+        with:
+          version: "0.20.0"
+          verb: call
+          module: github.com/stuttgart-things/blueprints/kubernetes-microservice@v1.71.0
+          args: >-
+            bake-image
+            --src .
+            --repository-name stuttgart-things/clusterbook-operator
+            --tag ${{ steps.meta.outputs.version }}
+            --registry-url ghcr.io
+            --registry-username env:GITHUB_ACTOR
+            --registry-password env:GITHUB_TOKEN
+            --dockerfile cluster/images/clusterbook-operator/Dockerfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+
+      - name: Build & push image (latest tag)
+        uses: dagger/dagger-for-github@v6
+        with:
+          version: "0.20.0"
+          verb: call
+          module: github.com/stuttgart-things/blueprints/kubernetes-microservice@v1.71.0
+          args: >-
+            bake-image
+            --src .
+            --repository-name stuttgart-things/clusterbook-operator
+            --tag latest
+            --registry-url ghcr.io
+            --registry-username env:GITHUB_ACTOR
+            --registry-password env:GITHUB_TOKEN
+            --dockerfile cluster/images/clusterbook-operator/Dockerfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
