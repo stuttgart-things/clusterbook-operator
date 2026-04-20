@@ -17,6 +17,7 @@ import deploy
 _mod = file.modpath()
 _crdFiles = [
     _mod + "/crds/clusterbook.stuttgart-things.com_clusterbookclusters.yaml"
+    _mod + "/crds/clusterbook.stuttgart-things.com_clusterbookloadbalancers.yaml"
     _mod + "/crds/clusterbook.stuttgart-things.com_clusterbookproviderconfigs.yaml"
 ]
 _crds = [yaml.decode(file.read(f)) for f in _crdFiles]
