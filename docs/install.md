@@ -16,16 +16,27 @@ Pick whichever option matches your tooling — all three produce the same result
 
 ### Option A — `flux` CLI
 
+`--output` expects an **existing directory** (the artifact is a bundle of files, not one YAML).
+
 ```bash
+mkdir -p /tmp/cbk
 flux pull artifact oci://ghcr.io/stuttgart-things/clusterbook-operator-kustomize:v0.6.0 --output /tmp/cbk
 kubectl apply -k /tmp/cbk
 
 kubectl -n clusterbook-system rollout status deploy/clusterbook-operator --timeout=120s
 ```
 
+Inspect before applying:
+
+```bash
+ls /tmp/cbk                 # 7 manifests
+kubectl kustomize /tmp/cbk  # preview as a single YAML stream
+```
+
 ### Option B — `oras`
 
 ```bash
+mkdir -p /tmp/cbk
 oras pull ghcr.io/stuttgart-things/clusterbook-operator-kustomize:v0.6.0 -o /tmp/cbk
 kubectl apply -k /tmp/cbk
 
@@ -85,6 +96,7 @@ Expected log line from controller-runtime: `Starting workers`.
 Same command with a newer tag. Rolling update in place.
 
 ```bash
+mkdir -p /tmp/cbk
 flux pull artifact oci://ghcr.io/stuttgart-things/clusterbook-operator-kustomize:<new-version> --output /tmp/cbk
 kubectl apply -k /tmp/cbk
 ```
