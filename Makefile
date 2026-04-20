@@ -8,7 +8,7 @@
 #   make docker-build   # container image
 
 IMG ?= ghcr.io/stuttgart-things/clusterbook-operator:dev
-CRD_DIR := config/crd
+CRD_DIR := kcl/crds
 ENVTEST_K8S_VERSION ?= 1.31.0
 
 .PHONY: deps
