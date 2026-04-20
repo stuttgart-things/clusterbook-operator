@@ -17,7 +17,10 @@ jobs:
     with:
       runs-on: ubuntu-latest
       stage-image: false
-      push-kustomize: false
+      push-kustomize: true
+      kcl-source-dir: kcl
+      kcl-profile-file: tests/kcl-deploy-profile.yaml
+      kustomize-oci-repo: ghcr.io/stuttgart-things/clusterbook-operator-kustomize
     secrets: inherit # pragma: allowlist secret
 
   publish:
