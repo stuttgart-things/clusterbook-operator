@@ -35,7 +35,7 @@ jobs:
           echo "version=$BEFORE" >> $GITHUB_OUTPUT
 
       - name: Semantic release
-        uses: dagger/dagger-for-github@v8.4.0
+        uses: dagger/dagger-for-github@v8.4.1
         with:
           version: "0.20.0"
           verb: call
@@ -80,7 +80,7 @@ jobs:
 
       - name: Push kustomize base
         if: steps.version-after.outputs.new_release == 'true'
-        uses: dagger/dagger-for-github@v8.4.0
+        uses: dagger/dagger-for-github@v8.4.1
         with:
           version: "0.20.0"
           verb: call
