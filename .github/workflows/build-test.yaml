@@ -46,7 +46,7 @@ jobs:
         run: |
           KUBEBUILDER_ASSETS=$(setup-envtest use 1.31.0 -p path)
           export KUBEBUILDER_ASSETS
-          go test ./... -v -count=1
+          go test -race ./... -v -count=1
 
       - name: Lint
         run: |

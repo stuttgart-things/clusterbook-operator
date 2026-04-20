@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -329,5 +331,70 @@ func TestReconcileReleaseOnDeleteOff(t *testing.T) {
 
 	if got := fake.releasedCount(); got != 0 {
 		t.Errorf("fake.released count = %d, want 0 (releaseOnDelete=false)", got)
+	}
+}
+
+func TestReconcileParallel(t *testing.T) {
+	ctx := context.Background()
+	ensureArgoNamespace(ctx, t)
+
+	fake := newFakeClusterbook()
+	defer fake.server.Close()
+
+	mustCreate(ctx, t, &argov1.ClusterbookProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "pc-parallel"},
+		Spec:       argov1.ClusterbookProviderConfigSpec{APIURL: fake.server.URL},
+	})
+
+	names := []string{"par-a", "par-b", "par-c"}
+	for _, name := range names {
+		mustCreate(ctx, t, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "kc-" + name, Namespace: "argocd"},
+			Data:       map[string][]byte{"kubeconfig": []byte(fakeKubeconfig)},
+		})
+		mustCreate(ctx, t, &argov1.ClusterbookCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: argov1.ClusterbookClusterSpec{
+				NetworkKey:          "10.0.0",
+				ClusterName:         name,
+				KubeconfigSecretRef: argov1.SecretKeyRef{Name: "kc-" + name, Namespace: "argocd"},
+				ProviderConfigRef:   corev1.LocalObjectReference{Name: "pc-parallel"},
+				ArgoCDNamespace:     "argocd",
+			},
+		})
+	}
+
+	r := &Reconciler{Client: k8sClient, Scheme: scheme}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, len(names))
+	for _, name := range names {
+		wg.Add(1)
+		go func(n string) {
+			defer wg.Done()
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: n}}); err != nil {
+				errs <- fmt.Errorf("reconcile %s: %w", n, err)
+			}
+		}(name)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	for _, name := range names {
+		var s corev1.Secret
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: "cluster-" + name, Namespace: "argocd"}, &s); err != nil {
+			t.Errorf("argo secret for %s missing: %v", name, err)
+		}
+	}
+
+	unique := map[string]struct{}{}
+	for _, ip := range fake.reservedIPs() {
+		unique[ip] = struct{}{}
+	}
+	if len(unique) != len(names) {
+		t.Errorf("expected %d distinct reserved IPs, got %d: %v", len(names), len(unique), unique)
 	}
 }

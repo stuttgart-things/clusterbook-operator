@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -72,6 +73,7 @@ type fakeClusterbook struct {
 	released []string
 	updates  []cbkclient.ReserveRequest // every UpdateIP body, in order
 	fqdn     string                     // returned by /clusters/{name}; empty means "no DNS"
+	nextIP   int                        // next host octet to hand out (starts at 42)
 }
 
 type ipState struct {
@@ -83,6 +85,7 @@ func newFakeClusterbook() *fakeClusterbook {
 	f := &fakeClusterbook{
 		reserved: map[string]string{},
 		state:    map[string]ipState{},
+		nextIP:   42,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/networks/", f.handleNetworks)
@@ -108,7 +111,8 @@ func (f *fakeClusterbook) handleNetworks(w http.ResponseWriter, r *http.Request)
 		f.mu.Lock()
 		ip, ok := f.reserved[req.Cluster]
 		if !ok {
-			ip = "10.0.0.42"
+			ip = fmt.Sprintf("10.0.0.%d", f.nextIP)
+			f.nextIP++
 			f.reserved[req.Cluster] = ip
 			f.state[ip] = ipState{cluster: req.Cluster, createDNS: req.CreateDNS}
 		}
@@ -186,6 +190,16 @@ func (f *fakeClusterbook) releasedCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.released)
+}
+
+func (f *fakeClusterbook) reservedIPs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.reserved))
+	for _, ip := range f.reserved {
+		out = append(out, ip)
+	}
+	return out
 }
 
 func (f *fakeClusterbook) updateCount() int {
