@@ -93,12 +93,28 @@ Expected log line from controller-runtime: `Starting workers`.
 
 ## Upgrade
 
-Same command with a newer tag. Rolling update in place.
+Same command with a newer tag, followed by a rollout wait:
 
 ```bash
 mkdir -p /tmp/cbk
 flux pull artifact oci://ghcr.io/stuttgart-things/clusterbook-operator-kustomize:<new-version> --output /tmp/cbk
 kubectl apply -k /tmp/cbk
+kubectl -n clusterbook-system rollout status deploy/clusterbook-operator --timeout=120s
+```
+
+> **Known upgrade caveat** (tracked in [#53](https://github.com/stuttgart-things/clusterbook-operator/issues/53)): the bundle currently pins the operator image to `:latest`, so `apply -k` between versions is a no-op from Kubernetes' perspective — the Deployment spec doesn't change, no rollout is triggered, and the running pod keeps whatever `:latest` layer was cached on the node. Until that's fixed at release time, force the version explicitly after the apply:
+>
+> ```bash
+> kubectl -n clusterbook-system set image deployment/clusterbook-operator \
+>   manager=ghcr.io/stuttgart-things/clusterbook-operator:<new-version>
+> kubectl -n clusterbook-system rollout status deploy/clusterbook-operator --timeout=120s
+> ```
+
+Verify the running image matches what you expect:
+
+```bash
+kubectl -n clusterbook-system get deploy clusterbook-operator \
+  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
 ```
 
 ## Uninstall
