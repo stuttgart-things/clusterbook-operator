@@ -9,6 +9,7 @@
 
 IMG ?= ghcr.io/stuttgart-things/clusterbook-operator:dev
 CRD_DIR := config/crd
+ENVTEST_K8S_VERSION ?= 1.31.0
 
 .PHONY: deps
 deps:
@@ -23,9 +24,13 @@ generate:
 build:
 	CGO_ENABLED=0 go build -o bin/manager ./cmd
 
+.PHONY: envtest
+envtest:
+	@command -v setup-envtest >/dev/null 2>&1 || go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+
 .PHONY: test
-test:
-	go test ./...
+test: envtest
+	KUBEBUILDER_ASSETS="$$(setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test ./...
 
 .PHONY: run
 run:

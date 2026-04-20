@@ -33,8 +33,14 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Install envtest
+        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+
       - name: Test
-        run: go test ./... -v -count=1
+        run: |
+          KUBEBUILDER_ASSETS=$(setup-envtest use 1.31.0 -p path)
+          export KUBEBUILDER_ASSETS
+          go test ./... -v -count=1
 
       - name: Lint
         run: |
