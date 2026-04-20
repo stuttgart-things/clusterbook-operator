@@ -24,7 +24,12 @@ clusterRole = {
     rules: [
         {
             apiGroups: ["clusterbook.stuttgart-things.com"]
-            resources: ["clusterbookclusters", "clusterbookproviderconfigs"]
+            resources: ["clusterbookclusters"]
+            verbs: ["get", "list", "watch", "update", "patch"]
+        }
+        {
+            apiGroups: ["clusterbook.stuttgart-things.com"]
+            resources: ["clusterbookproviderconfigs"]
             verbs: ["get", "list", "watch"]
         }
         {
