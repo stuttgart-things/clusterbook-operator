@@ -78,6 +78,21 @@ jobs:
           docker push ghcr.io/${{ github.repository }}:${VERSION}
           docker push ghcr.io/${{ github.repository }}:latest
 
+      - name: Stage release KCL profile (pin image tag)
+        if: steps.version-after.outputs.new_release == 'true'
+        run: |
+          VERSION="${{ steps.version-after.outputs.version }}"
+          mkdir -p /tmp/release
+          cp tests/kcl-deploy-profile.yaml /tmp/release/profile.yaml
+          # Replace the :latest image in the shipped profile with the
+          # actual tag being released, so the kustomize bundle renders
+          # config.image pinned to VERSION. Without this, consumers who
+          # `kubectl apply -k` on a tagged bundle see no Deployment spec
+          # change and nothing rolls over.
+          sed -i "s|^config.image:.*|config.image: ghcr.io/${{ github.repository }}:${VERSION}|" /tmp/release/profile.yaml
+          echo "--- staged profile ---"
+          cat /tmp/release/profile.yaml
+
       - name: Push kustomize base
         if: steps.version-after.outputs.new_release == 'true'
         uses: dagger/dagger-for-github@v8.4.1
@@ -88,7 +103,7 @@ jobs:
           args: >-
             push-kustomize-base
             --source ./kcl
-            --parameters-file ./tests/kcl-deploy-profile.yaml
+            --parameters-file /tmp/release/profile.yaml
             --address ghcr.io/stuttgart-things/clusterbook-operator-kustomize
             --tag ${{ steps.version-after.outputs.version }}
             --user env:GITHUB_USER
