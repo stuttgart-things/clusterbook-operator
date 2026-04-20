@@ -1,0 +1,55 @@
+---
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookProviderConfig
+metadata:
+  name: default
+spec:
+  apiURL: https://clusterbook.example.com
+  insecureSkipVerify: false
+---
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookCluster
+metadata:
+  name: prod-cluster-a
+spec:
+  networkKey: "10.31.103"
+  clusterName: prod-cluster-a
+  createDNS: true
+  useFQDNAsServer: true
+  kubeconfigSecretRef:
+    name: prod-cluster-a-kubeconfig
+    namespace: argocd
+    key: kubeconfig
+  providerConfigRef:
+    name: default
+  argocdNamespace: argocd
+  labels:
+    env: prod
+    region: eu-central-1
+  releaseOnDelete: false
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: workloads
+  namespace: argocd
+spec:
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            env: prod
+  template:
+    metadata:
+      name: "workloads-{{name}}"
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/stuttgart-things/workloads
+        path: base
+        targetRevision: main
+      destination:
+        server: "{{server}}"
+        namespace: default
+      syncPolicy:
+        automated: {}
