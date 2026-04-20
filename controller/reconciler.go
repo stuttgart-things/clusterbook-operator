@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -82,6 +83,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, fmt.Errorf("clusterbook returned no IPs")
 	}
 	ip := resv.IPs[0]
+
+	if err := r.reconcileDNSDrift(ctx, api, &cr, ip); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	info, _ := api.GetClusterInfo(ctx, cr.Spec.ClusterName)
 
@@ -276,6 +281,39 @@ func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.Clusterboo
 		return nil, err
 	}
 	return secret, nil
+}
+
+// reconcileDNSDrift compares the observed createDNS state on the clusterbook
+// side (derived from the IP's Status — "ASSIGNED" vs "ASSIGNED:DNS") with
+// cr.Spec.CreateDNS and issues an UpdateIP call when they diverge. Noop when
+// they already match or when the IP is not yet visible in the listing.
+func (r *Reconciler) reconcileDNSDrift(ctx context.Context, api *cbkclient.Client, cr *argov1.ClusterbookCluster, ip string) error {
+	ips, err := api.GetIPs(ctx, cr.Spec.NetworkKey)
+	if err != nil {
+		return fmt.Errorf("list IPs: %w", err)
+	}
+	for _, entry := range ips {
+		if entry.IP != ip {
+			continue
+		}
+		observedDNS := strings.Contains(entry.Status, "DNS")
+		if observedDNS == cr.Spec.CreateDNS {
+			return nil
+		}
+		status := "ASSIGNED"
+		if cr.Spec.CreateDNS {
+			status = "ASSIGNED:DNS"
+		}
+		if err := api.UpdateIP(ctx, cr.Spec.NetworkKey, ip, cbkclient.ReserveRequest{
+			Cluster:   cr.Spec.ClusterName,
+			CreateDNS: cr.Spec.CreateDNS,
+			Status:    status,
+		}); err != nil {
+			return fmt.Errorf("update IP: %w", err)
+		}
+		return nil
+	}
+	return nil
 }
 
 func setCondition(conds *[]metav1.Condition, c metav1.Condition) {
