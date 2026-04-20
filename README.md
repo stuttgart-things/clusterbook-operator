@@ -48,6 +48,27 @@ The REST client at `pkg/client` was copied (not forked) from
 `provider-clusterbook/internal/client`. Both projects evolve independently
 against the clusterbook API.
 
+## Install
+
+The released kustomize OCI bundle ships all CRDs, RBAC, and the Deployment. One command (plus a pull):
+
+```bash
+mkdir -p /tmp/cbk
+flux pull artifact oci://ghcr.io/stuttgart-things/clusterbook-operator-kustomize:v0.7.2 --output /tmp/cbk
+kubectl apply -k /tmp/cbk
+kubectl -n clusterbook-system rollout status deploy/clusterbook-operator --timeout=120s
+```
+
+> **Upgrade caveat:** the bundle currently pins the image to `:latest`, so `apply -k` alone won't trigger a rollout between versions (see [#53](https://github.com/stuttgart-things/clusterbook-operator/issues/53)). For now, force the image tag explicitly after the apply:
+>
+> ```bash
+> kubectl -n clusterbook-system set image deployment/clusterbook-operator \
+>   manager=ghcr.io/stuttgart-things/clusterbook-operator:v0.7.2
+> kubectl -n clusterbook-system rollout status deploy/clusterbook-operator --timeout=120s
+> ```
+
+Full install details and alternative tooling (`oras`, flux-kustomize-controller) in [`docs/install.md`](docs/install.md).
+
 ## Consuming from an ApplicationSet
 
 ```yaml
