@@ -16,6 +16,7 @@ import deploy
 
 _mod = file.modpath()
 _crdFiles = [
+    _mod + "/crds/clusterbook.stuttgart-things.com_clusterbookallocations.yaml"
     _mod + "/crds/clusterbook.stuttgart-things.com_clusterbookclusters.yaml"
     _mod + "/crds/clusterbook.stuttgart-things.com_clusterbookloadbalancers.yaml"
     _mod + "/crds/clusterbook.stuttgart-things.com_clusterbookproviderconfigs.yaml"
