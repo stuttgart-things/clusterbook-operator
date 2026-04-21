@@ -1,0 +1,109 @@
+# End-to-end: reserve an IP via ClusterbookAllocation, then let an
+# ArgoCD ApplicationSet deploy a CiliumLoadBalancerIPPool pinned to that
+# IP on each target cluster — using the stuttgart-things/argocd chart at
+# infra/cilium/lb.
+#
+# How the wiring works:
+#
+#   ClusterbookAllocation
+#     ├─ sinks.configMap            → argocd/lb-prod-a  (universal fact sink)
+#     └─ sinks.clusterSecretLabels  → argocd/cluster-prod-a
+#           labels:
+#             clusterbook.stuttgart-things.com/allocation-name: lb-prod-a
+#           annotations:
+#             clusterbook.stuttgart-things.com/ip:   10.31.101.42
+#             clusterbook.stuttgart-things.com/fqdn: *.lb-prod-a.example.com
+#             clusterbook.stuttgart-things.com/zone: example.com
+#
+#   ApplicationSet (Cluster generator, matches on allocation-name label)
+#     → one Application per matching cluster Secret
+#     → helm.valuesObject reads the annotation values and maps the single
+#       reserved IP into the chart's blocks[].start/stop shape.
+#
+# Chart values contract (infra/cilium/lb):
+#   poolName:  string
+#   blocks:    [{ start: <ip>, stop: <ip> }, …]
+#   l2Policy:  { name, namespace, externalIPs, loadBalancerIPs }
+#
+# Because ClusterbookAllocation reserves exactly one IP, the block is a
+# degenerate range with start == stop == status.ip.
+#
+# Preconditions:
+#   - ArgoCD cluster Secret `cluster-prod-a` already registered in the
+#     argocd namespace (from `argocd cluster add` or a ClusterbookCluster
+#     CR from this operator).
+#   - ClusterbookProviderConfig `default` installed.
+#   - An ArgoCD AppProject that permits the cluster + repo combination.
+---
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookAllocation
+metadata:
+  name: lb-prod-a
+spec:
+  networkKey: "10.31.101"
+  name: lb-prod-a
+  createDNS: true
+  providerConfigRef:
+    name: default
+  sinks:
+    # Universal copy of the facts — any consumer that can read a
+    # ConfigMap can pick these up.
+    configMap:
+      name: lb-prod-a
+      namespace: argocd
+    # Consumed by the ApplicationSet below via the Cluster generator.
+    clusterSecretLabels:
+      name: cluster-prod-a
+      namespace: argocd
+  releaseOnDelete: false
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: cilium-lb-pools
+  namespace: argocd
+spec:
+  # goTemplate: true unlocks {{ index .metadata.annotations "…" }},
+  # which is how we reach keys that contain dots or slashes.
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchExpressions:
+            # Fan out once per cluster Secret the operator has enriched.
+            # Each matching Secret carries an IP / FQDN in annotations.
+            - key: clusterbook.stuttgart-things.com/allocation-name
+              operator: Exists
+  template:
+    metadata:
+      name: 'cilium-lb-{{ index .metadata.labels "clusterbook.stuttgart-things.com/allocation-name" }}'
+    spec:
+      # Change to whichever AppProject permits this repo + destination combo.
+      project: default
+      source:
+        repoURL: https://github.com/stuttgart-things/argocd.git
+        targetRevision: main
+        path: infra/cilium/lb
+        helm:
+          valuesObject:
+            poolName: '{{ index .metadata.labels "clusterbook.stuttgart-things.com/allocation-name" }}-pool'
+            # Single-IP reservation → degenerate range (start == stop).
+            blocks:
+              - start: '{{ index .metadata.annotations "clusterbook.stuttgart-things.com/ip" }}'
+                stop:  '{{ index .metadata.annotations "clusterbook.stuttgart-things.com/ip" }}'
+            l2Policy:
+              name: default-l2-announcement-policy
+              namespace: kube-system
+              externalIPs: true
+              loadBalancerIPs: true
+      destination:
+        # Cluster generator fills .server from each matching Secret.
+        server: '{{ .server }}'
+        namespace: kube-system
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - ServerSideApply=true
