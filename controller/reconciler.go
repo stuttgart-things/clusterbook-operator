@@ -270,9 +270,24 @@ func buildServerURL(cr *argov1.ClusterbookCluster, ip string, info *cbkclient.Cl
 	}
 	host := ip
 	if cr.Spec.UseFQDNAsServer && info != nil && info.FQDN != "" {
-		host = info.FQDN
+		host = resolvableHost(info.FQDN, cr.Spec.ServerSubdomain)
 	}
 	return fmt.Sprintf("https://%s:%d", host, port)
+}
+
+// resolvableHost turns clusterbook's wildcard FQDN (*.<cluster>.<zone>)
+// into a concrete hostname suitable for use in an ArgoCD server URL.
+// The leading "*" is replaced with spec.ServerSubdomain (default "api")
+// which resolves through the same wildcard record. FQDNs without a "*."
+// prefix pass through unchanged.
+func resolvableHost(fqdn, subdomain string) string {
+	if !strings.HasPrefix(fqdn, "*.") {
+		return fqdn
+	}
+	if subdomain == "" {
+		subdomain = "api"
+	}
+	return subdomain + "." + strings.TrimPrefix(fqdn, "*.")
 }
 
 func argoSecretName(cr *argov1.ClusterbookCluster) string {

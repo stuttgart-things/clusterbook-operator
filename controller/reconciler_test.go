@@ -173,6 +173,84 @@ func TestReconcileUseFQDNAsServer(t *testing.T) {
 	}
 }
 
+// TestReconcileWildcardFQDN — clusterbook returns DNS records in
+// wildcard form (*.<cluster>.<zone>). That string cannot be used
+// verbatim in data.server — ArgoCD will DNS-fail on the "*.". The
+// operator must substitute the wildcard with a resolvable subdomain
+// (default "api", configurable via spec.serverSubdomain).
+func TestReconcileWildcardFQDN(t *testing.T) {
+	ctx := context.Background()
+	ensureArgoNamespace(ctx, t)
+
+	fake := newFakeClusterbook()
+	fake.fqdn = "*.wild.example.com"
+	defer fake.server.Close()
+
+	mustCreate(ctx, t, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "kc-wild", Namespace: "argocd"},
+		Data:       map[string][]byte{"kubeconfig": []byte(fakeKubeconfig)},
+	})
+	mustCreate(ctx, t, &argov1.ClusterbookProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "pc-wild"},
+		Spec:       argov1.ClusterbookProviderConfigSpec{APIURL: fake.server.URL},
+	})
+	mustCreate(ctx, t, &argov1.ClusterbookCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "wild-default"},
+		Spec: argov1.ClusterbookClusterSpec{
+			NetworkKey:          "10.0.0",
+			ClusterName:         "wild-default",
+			CreateDNS:           true,
+			UseFQDNAsServer:     true,
+			KubeconfigSecretRef: &argov1.SecretKeyRef{Name: "kc-wild", Namespace: "argocd"},
+			ProviderConfigRef:   corev1.LocalObjectReference{Name: "pc-wild"},
+			ArgoCDNamespace:     "argocd",
+		},
+	})
+	mustCreate(ctx, t, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "kc-wild-custom", Namespace: "argocd"},
+		Data:       map[string][]byte{"kubeconfig": []byte(fakeKubeconfig)},
+	})
+	mustCreate(ctx, t, &argov1.ClusterbookCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "wild-custom"},
+		Spec: argov1.ClusterbookClusterSpec{
+			NetworkKey:          "10.0.0",
+			ClusterName:         "wild-custom",
+			CreateDNS:           true,
+			UseFQDNAsServer:     true,
+			ServerSubdomain:     "control-plane",
+			KubeconfigSecretRef: &argov1.SecretKeyRef{Name: "kc-wild-custom", Namespace: "argocd"},
+			ProviderConfigRef:   corev1.LocalObjectReference{Name: "pc-wild"},
+			ArgoCDNamespace:     "argocd",
+		},
+	})
+
+	r := &Reconciler{Client: k8sClient, Scheme: scheme}
+	for _, name := range []string{"wild-default", "wild-custom"} {
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: name}}); err != nil {
+			t.Fatalf("reconcile %s: %v", name, err)
+		}
+	}
+
+	var def corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "cluster-wild-default", Namespace: "argocd"}, &def); err != nil {
+		t.Fatalf("get default Secret: %v", err)
+	}
+	if got, want := string(def.Data["server"]), "https://api.wild.example.com:6443"; got != want {
+		t.Errorf("default server = %q, want %q (wildcard → api substitution)", got, want)
+	}
+	if got := def.Annotations["clusterbook.stuttgart-things.com/fqdn"]; got != "*.wild.example.com" {
+		t.Errorf("fqdn annotation = %q, want *.wild.example.com (annotation preserves raw FQDN)", got)
+	}
+
+	var cust corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "cluster-wild-custom", Namespace: "argocd"}, &cust); err != nil {
+		t.Fatalf("get custom Secret: %v", err)
+	}
+	if got, want := string(cust.Data["server"]), "https://control-plane.wild.example.com:6443"; got != want {
+		t.Errorf("custom server = %q, want %q (spec.serverSubdomain override)", got, want)
+	}
+}
+
 func TestReconcileFinalizeReleasesIP(t *testing.T) {
 	ctx := context.Background()
 	ensureArgoNamespace(ctx, t)

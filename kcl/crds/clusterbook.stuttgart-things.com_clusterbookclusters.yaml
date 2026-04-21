@@ -134,6 +134,16 @@ spec:
                 description: ServerPort is the port appended to the ArgoCD server
                   URL. Defaults to 6443.
                 type: integer
+              serverSubdomain:
+                description: |-
+                  ServerSubdomain is substituted for the wildcard "*" label in the
+                  clusterbook FQDN when UseFQDNAsServer is true. Clusterbook's DNS
+                  integration creates wildcard records (*.<cluster>.<zone>) which
+                  cannot be used verbatim as a hostname. Defaults to "api" —
+                  conventional for Kubernetes API servers and always resolvable via
+                  the same wildcard record. Ignored when UseFQDNAsServer is false
+                  or the FQDN is not in wildcard form.
+                type: string
               useFQDNAsServer:
                 description: |-
                   UseFQDNAsServer builds the ArgoCD server URL from the FQDN instead
