@@ -27,6 +27,16 @@ type ClusterbookClusterSpec struct {
 	// +optional
 	ServerPort int `json:"serverPort,omitempty"`
 
+	// ServerSubdomain is substituted for the wildcard "*" label in the
+	// clusterbook FQDN when UseFQDNAsServer is true. Clusterbook's DNS
+	// integration creates wildcard records (*.<cluster>.<zone>) which
+	// cannot be used verbatim as a hostname. Defaults to "api" —
+	// conventional for Kubernetes API servers and always resolvable via
+	// the same wildcard record. Ignored when UseFQDNAsServer is false
+	// or the FQDN is not in wildcard form.
+	// +optional
+	ServerSubdomain string `json:"serverSubdomain,omitempty"`
+
 	// KubeconfigSecretRef references a Secret holding the target cluster's
 	// kubeconfig. The controller extracts server/CA/auth from it and writes
 	// a new ArgoCD cluster Secret. Mutually exclusive with ExistingSecretRef.
