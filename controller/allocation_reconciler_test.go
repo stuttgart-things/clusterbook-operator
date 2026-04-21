@@ -239,6 +239,59 @@ func TestAllocationReconcileFinalizeCleans(t *testing.T) {
 	}
 }
 
+// TestAllocationReconcileSurvivesClusterFieldMangling — reproduces a
+// clusterbook upstream bug: when a reservation is made with
+// createDNS=true, the /ips listing comes back with cluster="DNS"
+// instead of the requested name. The name-match path in ensureReservation
+// can't recover, so subsequent reconciles would re-call Reserve and
+// drain the pool. Guard: trust cr.Status.IP once set.
+func TestAllocationReconcileSurvivesClusterFieldMangling(t *testing.T) {
+	ctx := context.Background()
+	ensureArgoNamespace(ctx, t)
+
+	fake := newFakeClusterbook()
+	defer fake.server.Close()
+
+	mustCreate(ctx, t, &argov1.ClusterbookProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "pc-alloc-mangle"},
+		Spec:       argov1.ClusterbookProviderConfigSpec{APIURL: fake.server.URL},
+	})
+	mustCreate(ctx, t, &argov1.ClusterbookAllocation{
+		ObjectMeta: metav1.ObjectMeta{Name: "alloc-mangle"},
+		Spec: argov1.ClusterbookAllocationSpec{
+			NetworkKey:        "10.0.0",
+			Name:              "alloc-mangle",
+			CreateDNS:         true,
+			ProviderConfigRef: corev1.LocalObjectReference{Name: "pc-alloc-mangle"},
+			Sinks: argov1.AllocationSinks{
+				ConfigMap: &argov1.ConfigMapSink{Name: "alloc-mangle-facts", Namespace: "argocd"},
+			},
+		},
+	})
+
+	r := &AllocationReconciler{Client: k8sClient, Scheme: scheme}
+	// First reconcile — normal reserve.
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "alloc-mangle"}}); err != nil {
+		t.Fatalf("initial reconcile: %v", err)
+	}
+
+	// Simulate the upstream bug: the reservation we just made comes back
+	// in the listing with the cluster field rewritten to "DNS".
+	fake.mangleCluster("10.0.0.42", "DNS")
+
+	// A few more reconciles — none should call Reserve again, even though
+	// the name-match in the listing now fails.
+	for i := 0; i < 3; i++ {
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "alloc-mangle"}}); err != nil {
+			t.Fatalf("reconcile %d: %v", i, err)
+		}
+	}
+
+	if got := fake.reserveCount(); got != 1 {
+		t.Errorf("reserve count = %d, want 1 (cr.Status.IP must shield against listing mismatches)", got)
+	}
+}
+
 func TestAllocationReconcileReservesOnlyOnce(t *testing.T) {
 	ctx := context.Background()
 	ensureArgoNamespace(ctx, t)

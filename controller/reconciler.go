@@ -399,11 +399,24 @@ func (r *Reconciler) stripEnrichedMetadata(ctx context.Context, ref argov1.Secre
 
 // ensureReservation returns the IP already reserved for this cluster in
 // clusterbook, reserving a fresh one only when no existing reservation is
-// found. This is defensive: the clusterbook API is not strictly idempotent
-// by cluster name, so calling Reserve on every reconcile tick can drain
-// the pool when something else (e.g. a stuck reconcile loop) retries
-// aggressively.
+// found. Defensive layering, in order of trust:
+//
+//  1. cr.Status.IP — once we've successfully reserved once, this is the
+//     authoritative source. Clusterbook's listing can mangle the Cluster
+//     field (observed: reservations made with createDNS=true come back
+//     with cluster="DNS" instead of the requested name), so matching by
+//     name on every tick is unreliable. Trusting status makes the
+//     reconciler idempotent even when clusterbook's records drift.
+//
+//  2. GetIPs listing, matched by cluster name — used on cold start
+//     (CR just created, status.ip still empty) to recover an already-made
+//     reservation before risking a duplicate Reserve call.
+//
+//  3. Reserve — only if neither of the above found a reservation.
 func (r *Reconciler) ensureReservation(ctx context.Context, api *cbkclient.Client, cr *argov1.ClusterbookCluster) (string, error) {
+	if cr.Status.IP != "" {
+		return cr.Status.IP, nil
+	}
 	existing, err := api.GetIPs(ctx, cr.Spec.NetworkKey)
 	if err != nil {
 		return "", fmt.Errorf("list IPs: %w", err)
