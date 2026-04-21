@@ -78,18 +78,24 @@ spec:
       namespace: argocd
 ```
 
-The Secret gets:
+The Secret gets (for an allocation named `app-frontend`):
 ```yaml
 metadata:
   labels:
-    clusterbook.stuttgart-things.com/allocation-name: app-frontend
+    clusterbook.stuttgart-things.com/allocation-app-frontend:          "true"
+    clusterbook.stuttgart-things.com/allocation-app-frontend-ip:       "10.31.101.42"
+    clusterbook.stuttgart-things.com/allocation-app-frontend-zone:     "example.com"
   annotations:
-    clusterbook.stuttgart-things.com/ip: "10.31.101.42"
-    clusterbook.stuttgart-things.com/fqdn: "app-frontend.example.com"
-    clusterbook.stuttgart-things.com/zone: "example.com"
+    clusterbook.stuttgart-things.com/allocation-app-frontend-ip:       "10.31.101.42"
+    clusterbook.stuttgart-things.com/allocation-app-frontend-fqdn:     "app-frontend.example.com"
+    clusterbook.stuttgart-things.com/allocation-app-frontend-zone:     "example.com"
 ```
 
-Consumer pattern: ArgoCD's built-in **Cluster** generator with `selector.matchLabels`.
+Every key is namespaced by the allocation's `spec.name`, so multiple allocations (including a `ClusterbookCluster` cluster registration on the same Secret) coexist without overwriting each other. The `allocation-<name>` presence label is meant for `matchLabels` in Cluster generators; the `-ip` / `-fqdn` / `-zone` variants are for `goTemplate` `valuesObject`.
+
+FQDN stays annotation-only because clusterbook returns it as `*.<cluster>.<zone>` and `*` isn't a valid label-value character.
+
+Consumer pattern: ArgoCD's built-in **Cluster** generator with `selector.matchLabels: {clusterbook.stuttgart-things.com/allocation-<name>: "true"}` — one ApplicationSet per allocation.
 
 If the referenced Secret is missing, the reconciler surfaces a `ClusterSecretFound=False` condition and continues — it doesn't error-loop.
 

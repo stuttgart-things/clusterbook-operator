@@ -9,11 +9,17 @@
 #     ├─ sinks.configMap            → argocd/lb-prod-a  (universal fact sink)
 #     └─ sinks.clusterSecretLabels  → argocd/cluster-prod-a
 #           labels:
-#             clusterbook.stuttgart-things.com/allocation-name: lb-prod-a
+#             clusterbook.stuttgart-things.com/allocation-lb-prod-a:        "true"
+#             clusterbook.stuttgart-things.com/allocation-lb-prod-a-ip:     10.31.101.42
+#             clusterbook.stuttgart-things.com/allocation-lb-prod-a-zone:   example.com
 #           annotations:
-#             clusterbook.stuttgart-things.com/ip:   10.31.101.42
-#             clusterbook.stuttgart-things.com/fqdn: *.lb-prod-a.example.com
-#             clusterbook.stuttgart-things.com/zone: example.com
+#             clusterbook.stuttgart-things.com/allocation-lb-prod-a-ip:     10.31.101.42
+#             clusterbook.stuttgart-things.com/allocation-lb-prod-a-fqdn:   *.lb-prod-a.example.com
+#             clusterbook.stuttgart-things.com/allocation-lb-prod-a-zone:   example.com
+#
+#   Per-allocation key namespacing means multiple allocations (e.g. an
+#   API-server reservation + an LB-pool reservation) can share the same
+#   cluster Secret without clobbering each other.
 #
 #   ApplicationSet (Cluster generator, matches on allocation-name label)
 #     → one Application per matching cluster Secret
@@ -70,14 +76,16 @@ spec:
   generators:
     - clusters:
         selector:
-          matchExpressions:
-            # Fan out once per cluster Secret the operator has enriched.
-            # Each matching Secret carries an IP / FQDN in annotations.
-            - key: clusterbook.stuttgart-things.com/allocation-name
-              operator: Exists
+          matchLabels:
+            # Select clusters the "lb-prod-a" allocation has enriched.
+            # One ApplicationSet per allocation name — the Cluster
+            # generator produces one Application per matching cluster,
+            # and the selector identifies which allocation's facts to
+            # template from the Secret's annotations.
+            clusterbook.stuttgart-things.com/allocation-lb-prod-a: "true"
   template:
     metadata:
-      name: 'cilium-lb-{{ index .metadata.labels "clusterbook.stuttgart-things.com/allocation-name" }}'
+      name: cilium-lb-prod-a-{{ .name }}
     spec:
       # Change to whichever AppProject permits this repo + destination combo.
       project: default
@@ -87,19 +95,19 @@ spec:
         path: infra/cilium/lb
         helm:
           valuesObject:
-            poolName: '{{ index .metadata.labels "clusterbook.stuttgart-things.com/allocation-name" }}-pool'
+            poolName: lb-prod-a-pool
             # Single-IP reservation → degenerate range (start == stop).
             blocks:
-              - start: '{{ index .metadata.annotations "clusterbook.stuttgart-things.com/ip" }}'
-                stop:  '{{ index .metadata.annotations "clusterbook.stuttgart-things.com/ip" }}'
+              - start: '{{ index .metadata.annotations "clusterbook.stuttgart-things.com/allocation-lb-prod-a-ip" }}'
+                stop:  '{{ index .metadata.annotations "clusterbook.stuttgart-things.com/allocation-lb-prod-a-ip" }}'
             l2Policy:
               name: default-l2-announcement-policy
               namespace: kube-system
               externalIPs: true
               loadBalancerIPs: true
       destination:
-        # Cluster generator fills .server from each matching Secret.
-        server: '{{ .server }}'
+        # name resolves to data.server from the matched cluster Secret.
+        name: '{{ .name }}'
         namespace: kube-system
       syncPolicy:
         automated:
