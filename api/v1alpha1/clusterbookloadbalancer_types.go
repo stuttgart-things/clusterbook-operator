@@ -5,6 +5,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// +kubebuilder:validation:XValidation:rule="(has(self.ciliumPool) ? 1 : 0) + (has(self.serviceRef) ? 1 : 0) == 1",message="exactly one of ciliumPool or serviceRef must be set"
 type ClusterbookLoadBalancerSpec struct {
 	// NetworkKey is the clusterbook network pool (e.g. "10.31.101").
 	NetworkKey string `json:"networkKey"`
@@ -23,13 +24,26 @@ type ClusterbookLoadBalancerSpec struct {
 	ProviderConfigRef corev1.LocalObjectReference `json:"providerConfigRef"`
 
 	// CiliumPool creates a CiliumLoadBalancerIPPool pinned to the reserved
-	// IP. Exactly one target mode must be set.
+	// IP. Mutually exclusive with ServiceRef.
 	// +optional
 	CiliumPool *CiliumPoolTarget `json:"ciliumPool,omitempty"`
+
+	// ServiceRef patches .spec.loadBalancerIP on an existing Service with
+	// the reserved IP. The prior loadBalancerIP is recorded in a CR
+	// annotation and restored when the CR is deleted. Mutually exclusive
+	// with CiliumPool.
+	// +optional
+	ServiceRef *ServiceObjectRef `json:"serviceRef,omitempty"`
 
 	// ReleaseOnDelete releases the clusterbook IP when the CR is deleted.
 	// +optional
 	ReleaseOnDelete bool `json:"releaseOnDelete,omitempty"`
+}
+
+// ServiceObjectRef identifies a Service by name and namespace.
+type ServiceObjectRef struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
 }
 
 type CiliumPoolTarget struct {
@@ -61,8 +75,13 @@ type ClusterbookLoadBalancerStatus struct {
 	Zone string `json:"zone,omitempty"`
 
 	// PoolName is the name of the CiliumLoadBalancerIPPool created by
-	// the operator.
+	// the operator (only set in CiliumPool mode).
 	PoolName string `json:"poolName,omitempty"`
+
+	// TargetServiceRef echoes spec.serviceRef when that target mode is
+	// active. Empty in CiliumPool mode.
+	// +optional
+	TargetServiceRef *ServiceObjectRef `json:"targetServiceRef,omitempty"`
 
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }

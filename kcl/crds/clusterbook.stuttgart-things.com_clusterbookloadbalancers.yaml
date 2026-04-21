@@ -58,7 +58,7 @@ spec:
               ciliumPool:
                 description: |-
                   CiliumPool creates a CiliumLoadBalancerIPPool pinned to the reserved
-                  IP. Exactly one target mode must be set.
+                  IP. Mutually exclusive with ServiceRef.
                 properties:
                   namespace:
                     description: |-
@@ -153,11 +153,30 @@ spec:
                 description: ReleaseOnDelete releases the clusterbook IP when the
                   CR is deleted.
                 type: boolean
+              serviceRef:
+                description: |-
+                  ServiceRef patches .spec.loadBalancerIP on an existing Service with
+                  the reserved IP. The prior loadBalancerIP is recorded in a CR
+                  annotation and restored when the CR is deleted. Mutually exclusive
+                  with CiliumPool.
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
             required:
             - name
             - networkKey
             - providerConfigRef
             type: object
+            x-kubernetes-validations:
+            - message: exactly one of ciliumPool or serviceRef must be set
+              rule: '(has(self.ciliumPool) ? 1 : 0) + (has(self.serviceRef) ? 1 :
+                0) == 1'
           status:
             properties:
               conditions:
@@ -226,8 +245,21 @@ spec:
               poolName:
                 description: |-
                   PoolName is the name of the CiliumLoadBalancerIPPool created by
-                  the operator.
+                  the operator (only set in CiliumPool mode).
                 type: string
+              targetServiceRef:
+                description: |-
+                  TargetServiceRef echoes spec.serviceRef when that target mode is
+                  active. Empty in CiliumPool mode.
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
               zone:
                 description: Zone is the DNS zone returned by clusterbook.
                 type: string

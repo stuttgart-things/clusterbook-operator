@@ -25,6 +25,12 @@ import (
 
 const (
 	lbFinalizer = "clusterbook.stuttgart-things.com/lb-finalizer"
+
+	// annotationPreviousLBIP records the .spec.loadBalancerIP value the
+	// target Service had before the operator patched it. Stored on the CR
+	// itself so we can restore it verbatim on delete — an empty string
+	// means the Service had no loadBalancerIP set and should be cleared.
+	annotationPreviousLBIP = "clusterbook.stuttgart-things.com/previous-loadbalancer-ip"
 )
 
 // ciliumIPPoolGVK points at the CiliumLoadBalancerIPPool CRD. Using
@@ -73,8 +79,11 @@ func (r *LoadBalancerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 	}
 
-	if cr.Spec.CiliumPool == nil {
-		return ctrl.Result{}, fmt.Errorf("spec.ciliumPool is required (only target mode supported today)")
+	if cr.Spec.CiliumPool == nil && cr.Spec.ServiceRef == nil {
+		return ctrl.Result{}, fmt.Errorf("spec.ciliumPool or spec.serviceRef must be set")
+	}
+	if cr.Spec.CiliumPool != nil && cr.Spec.ServiceRef != nil {
+		return ctrl.Result{}, fmt.Errorf("spec.ciliumPool and spec.serviceRef are mutually exclusive")
 	}
 
 	ip, err := r.ensureReservation(ctx, api, &cr)
@@ -83,21 +92,44 @@ func (r *LoadBalancerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	info, _ := api.GetClusterInfo(ctx, cr.Spec.Name)
 
-	poolName := cr.Spec.CiliumPool.PoolName
-	if poolName == "" {
-		poolName = cr.Spec.Name + "-pool"
-	}
+	// Do all non-status mutations (Service patches, pool upserts, CR
+	// annotation writes) first, then assign status in one shot. Mixing the
+	// two leads to lost status updates: r.Update on the CR to persist the
+	// previous-loadBalancerIP annotation returns an object with empty
+	// status (status lives on a subresource), clobbering any cr.Status.*
+	// we set beforehand.
 
-	if err := r.upsertCiliumPool(ctx, &cr, poolName, ip, info); err != nil {
-		return ctrl.Result{}, fmt.Errorf("upsert cilium pool: %w", err)
+	var (
+		poolName         string
+		targetServiceRef *argov1.ServiceObjectRef
+	)
+
+	switch {
+	case cr.Spec.CiliumPool != nil:
+		poolName = cr.Spec.CiliumPool.PoolName
+		if poolName == "" {
+			poolName = cr.Spec.Name + "-pool"
+		}
+		if err := r.upsertCiliumPool(ctx, &cr, poolName, ip, info); err != nil {
+			return ctrl.Result{}, fmt.Errorf("upsert cilium pool: %w", err)
+		}
+
+	case cr.Spec.ServiceRef != nil:
+		if err := r.patchServiceLBIP(ctx, &cr, ip); err != nil {
+			return ctrl.Result{}, fmt.Errorf("patch service loadBalancerIP: %w", err)
+		}
+		ref := *cr.Spec.ServiceRef
+		targetServiceRef = &ref
 	}
 
 	cr.Status.IP = ip
 	cr.Status.PoolName = poolName
+	cr.Status.TargetServiceRef = targetServiceRef
 	if info != nil {
 		cr.Status.FQDN = info.FQDN
 		cr.Status.Zone = info.Zone
 	}
+
 	setCondition(&cr.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             metav1.ConditionTrue,
@@ -115,7 +147,12 @@ func (r *LoadBalancerReconciler) finalize(ctx context.Context, cr *argov1.Cluste
 		return ctrl.Result{}, nil
 	}
 
-	if cr.Status.PoolName != "" {
+	switch {
+	case cr.Spec.ServiceRef != nil:
+		if err := r.restoreServiceLBIP(ctx, cr); err != nil {
+			return ctrl.Result{}, fmt.Errorf("restore service loadBalancerIP: %w", err)
+		}
+	case cr.Status.PoolName != "":
 		pool := &unstructured.Unstructured{}
 		pool.SetGroupVersionKind(ciliumIPPoolGVK)
 		pool.SetName(cr.Status.PoolName)
@@ -235,6 +272,56 @@ func (r *LoadBalancerReconciler) upsertCiliumPool(ctx context.Context, cr *argov
 		return err
 	}
 	return nil
+}
+
+// patchServiceLBIP sets the target Service's .spec.loadBalancerIP to the
+// reserved clusterbook IP. The prior value is captured in an annotation on
+// the CR the first time we patch — subsequent reconciles are no-ops when
+// the field is already current, and never overwrite the stored prior
+// value (which would lose the original loadBalancerIP if the user edited
+// the Service after we first patched it).
+func (r *LoadBalancerReconciler) patchServiceLBIP(ctx context.Context, cr *argov1.ClusterbookLoadBalancer, ip string) error {
+	ref := *cr.Spec.ServiceRef
+	var svc corev1.Service
+	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}, &svc); err != nil {
+		return err
+	}
+
+	if _, captured := cr.Annotations[annotationPreviousLBIP]; !captured {
+		if cr.Annotations == nil {
+			cr.Annotations = map[string]string{}
+		}
+		cr.Annotations[annotationPreviousLBIP] = svc.Spec.LoadBalancerIP
+		if err := r.Update(ctx, cr); err != nil {
+			return fmt.Errorf("record previous loadBalancerIP: %w", err)
+		}
+	}
+
+	if svc.Spec.LoadBalancerIP == ip {
+		return nil
+	}
+	svc.Spec.LoadBalancerIP = ip
+	return r.Update(ctx, &svc)
+}
+
+// restoreServiceLBIP puts back the .spec.loadBalancerIP the Service had
+// before the operator first touched it. A missing Service is a no-op —
+// there's nothing to restore if it was deleted out from under us.
+func (r *LoadBalancerReconciler) restoreServiceLBIP(ctx context.Context, cr *argov1.ClusterbookLoadBalancer) error {
+	ref := *cr.Spec.ServiceRef
+	var svc corev1.Service
+	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}, &svc); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	prior := cr.Annotations[annotationPreviousLBIP]
+	if svc.Spec.LoadBalancerIP == prior {
+		return nil
+	}
+	svc.Spec.LoadBalancerIP = prior
+	return r.Update(ctx, &svc)
 }
 
 func labelSelectorToMap(sel *metav1.LabelSelector) (map[string]interface{}, error) {

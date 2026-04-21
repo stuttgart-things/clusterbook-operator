@@ -1,6 +1,11 @@
-# LoadBalancer IPs via Cilium
+# LoadBalancer IPs
 
-`ClusterbookLoadBalancer` reserves an IP from clusterbook and materialises it as a `CiliumLoadBalancerIPPool`. Any Service matching the pool's `serviceSelector` receives that IP when it enters `LoadBalancer` mode.
+`ClusterbookLoadBalancer` reserves an IP from clusterbook and wires it to a workload through one of two target modes:
+
+- **`ciliumPool`** — materialise the IP as a `CiliumLoadBalancerIPPool` so any Service matching the pool's `serviceSelector` receives it (Cilium LB IPAM)
+- **`serviceRef`** — set `.spec.loadBalancerIP` directly on an existing Service (for setups without LB IPAM, or when you want tight control of which Service gets which IP)
+
+Exactly one target mode must be set — the CRD rejects specs with both or neither.
 
 ## Prerequisites
 
@@ -106,11 +111,42 @@ kubectl -n ingress-nginx get svc ingress-nginx-controller
 ## Delete semantics
 
 - `kubectl delete clusterbookloadbalancer ingress-main` → finalizer runs:
-    - Deletes the CiliumLoadBalancerIPPool (the Service loses its IP; Cilium will re-allocate from another matching pool if one exists)
+    - `ciliumPool` mode: deletes the `CiliumLoadBalancerIPPool` (the Service loses its IP; Cilium will re-allocate from another matching pool if one exists)
+    - `serviceRef` mode: restores the target Service's `.spec.loadBalancerIP` to whatever value it had before the operator patched it (captured in the CR annotation `clusterbook.stuttgart-things.com/previous-loadbalancer-ip`). The Service itself is never deleted.
     - Releases the clusterbook IP **only if** `releaseOnDelete: true`
     - Removes the finalizer, CR is garbage-collected
 
+## Alternate target mode — `serviceRef`
+
+When you already have a `LoadBalancer` Service and just want to pin its IP to a clusterbook-reserved one — without introducing a Cilium IP pool — use `serviceRef`:
+
+```yaml
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookLoadBalancer
+metadata:
+  name: ingress-main
+spec:
+  networkKey: "10.31.101"
+  name: ingress-main
+  createDNS: true
+  providerConfigRef:
+    name: default
+  serviceRef:
+    name: ingress-nginx-controller
+    namespace: ingress-nginx
+  releaseOnDelete: true
+```
+
+What happens:
+
+1. Reserve the IP (+ optional DNS) same as before.
+2. `GET` the target Service, capture its current `.spec.loadBalancerIP` in a CR annotation (`clusterbook.stuttgart-things.com/previous-loadbalancer-ip`) on the first reconcile only — so later user edits don't overwrite the recorded prior value.
+3. Patch `.spec.loadBalancerIP` to the reserved IP.
+4. Status: `ip`, `fqdn`, `zone`, `targetServiceRef`. `poolName` is empty in this mode.
+5. On CR delete: restore `.spec.loadBalancerIP` from the annotation (empty string if there was nothing originally). Release the clusterbook IP if `releaseOnDelete: true`.
+
+If the target Service doesn't exist at reconcile time the operator returns an error and retries — create the Service first, then the `ClusterbookLoadBalancer`.
+
 ## Current limitations
 
-- Only `ciliumPool` target mode is supported. Setting `loadBalancerIP` directly on an existing Service via `serviceRef` is a tracked follow-up.
 - MetalLB and Gateway API integrations land later as additional target modes on the same CRD.
