@@ -5,6 +5,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// +kubebuilder:validation:XValidation:rule="(has(self.kubeconfigSecretRef) ? 1 : 0) + (has(self.existingSecretRef) ? 1 : 0) == 1",message="exactly one of kubeconfigSecretRef or existingSecretRef must be set"
 type ClusterbookClusterSpec struct {
 	// NetworkKey is the clusterbook network pool (e.g. "10.31.103").
 	NetworkKey string `json:"networkKey"`
@@ -18,7 +19,7 @@ type ClusterbookClusterSpec struct {
 	CreateDNS bool `json:"createDNS,omitempty"`
 
 	// UseFQDNAsServer builds the ArgoCD server URL from the FQDN instead
-	// of the reserved IP. Requires CreateDNS=true.
+	// of the reserved IP. Requires CreateDNS=true. Ignored in enrich mode.
 	// +optional
 	UseFQDNAsServer bool `json:"useFQDNAsServer,omitempty"`
 
@@ -27,20 +28,32 @@ type ClusterbookClusterSpec struct {
 	ServerPort int `json:"serverPort,omitempty"`
 
 	// KubeconfigSecretRef references a Secret holding the target cluster's
-	// kubeconfig. The controller extracts server/CA/auth from it.
-	KubeconfigSecretRef SecretKeyRef `json:"kubeconfigSecretRef"`
+	// kubeconfig. The controller extracts server/CA/auth from it and writes
+	// a new ArgoCD cluster Secret. Mutually exclusive with ExistingSecretRef.
+	// +optional
+	KubeconfigSecretRef *SecretKeyRef `json:"kubeconfigSecretRef,omitempty"`
+
+	// ExistingSecretRef points at an ArgoCD cluster Secret that is already
+	// managed elsewhere. In this "enrich" mode the operator still reserves
+	// an IP/DNS and populates status, but only merges clusterbook-prefixed
+	// labels and annotations onto the Secret — it does not create, own, or
+	// modify the Secret's data fields. Mutually exclusive with KubeconfigSecretRef.
+	// +optional
+	ExistingSecretRef *SecretObjectRef `json:"existingSecretRef,omitempty"`
 
 	// ProviderConfigRef points to a ClusterbookProviderConfig with the
 	// clusterbook API URL and TLS options.
 	ProviderConfigRef corev1.LocalObjectReference `json:"providerConfigRef"`
 
 	// ArgoCDNamespace is where the generated cluster Secret is written.
-	// Defaults to "argocd".
+	// Defaults to "argocd". Ignored in enrich mode (the existing Secret's
+	// namespace is taken from ExistingSecretRef).
 	// +optional
 	ArgoCDNamespace string `json:"argocdNamespace,omitempty"`
 
-	// Labels are copied onto the generated cluster Secret. Use them as
-	// selectors in ApplicationSet cluster generators.
+	// Labels are applied to the cluster Secret under the
+	// clusterbook.stuttgart-things.com/ prefix. Use them as selectors in
+	// ApplicationSet cluster generators.
 	// +optional
 	Labels map[string]string `json:"labels,omitempty"`
 
@@ -55,6 +68,13 @@ type SecretKeyRef struct {
 	// Key defaults to "kubeconfig".
 	// +optional
 	Key string `json:"key,omitempty"`
+}
+
+// SecretObjectRef points at a Secret by name and namespace, without a
+// key. Used for enrich mode where the operator only touches metadata.
+type SecretObjectRef struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
 }
 
 type ClusterbookClusterStatus struct {
