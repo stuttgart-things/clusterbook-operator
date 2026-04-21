@@ -28,3 +28,21 @@ spec:
       matchLabels:
         app.kubernetes.io/name: ingress-nginx
   releaseOnDelete: true
+---
+# Alternate target mode — patch an existing Service's loadBalancerIP
+# instead of creating a Cilium pool. Use when you don't have LB IPAM, or
+# when you want tight 1:1 control over which Service gets which IP.
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookLoadBalancer
+metadata:
+  name: ingress-main-svcref
+spec:
+  networkKey: "10.31.101"
+  name: ingress-main-svcref
+  createDNS: true
+  providerConfigRef:
+    name: default
+  serviceRef:
+    name: ingress-nginx-controller
+    namespace: ingress-nginx
+  releaseOnDelete: true
