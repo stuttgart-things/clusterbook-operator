@@ -13,7 +13,7 @@ After the last step:
 
 ## Prerequisites
 
-- `clusterbook-operator` installed on the ArgoCD cluster, **v0.12.2 or later** (earlier versions write an unresolvable wildcard into `data.server`) — see [Install](install.md).
+- `clusterbook-operator` installed on the ArgoCD cluster, **v0.12.3 or later** (adds `preserveKubeconfigServer`; earlier versions forcibly rewrite `data.server` to the clusterbook endpoint) — see [Install](install.md).
 - `clusterbook` server **v1.25.1 or later** if you want `createDNS: true` to actually create a DNS record — see [Compatibility](compatibility.md).
 - A `ClusterbookProviderConfig` named `default` (or whatever name you'll reference) already applied, pointing at the clusterbook API.
 - A kubeconfig file on your workstation for the **new cluster** (not the ArgoCD cluster). Context already selected; single-cluster kubeconfigs work as-is, multi-cluster kubeconfigs need a `kubectl config view --minify --flatten --context=<ctx>` first.
@@ -68,8 +68,10 @@ metadata:
 spec:
   networkKey: "10.31.104"
   clusterName: ci-mgmt-t1
-  createDNS: true                  # clusterbook → PowerDNS record
-  useFQDNAsServer: true            # cluster Secret's data.server uses the FQDN, not the raw IP
+  createDNS: true                       # clusterbook → PowerDNS record
+  preserveKubeconfigServer: true        # keep data.server = kubeconfig's URL — see note below
+  # useFQDNAsServer: true               # alternative: rewrite data.server to the clusterbook FQDN
+  # serverSubdomain: api                # substitution label when useFQDNAsServer is set (default "api")
   kubeconfigSecretRef:
     name: ci-mgmt-t1-kubeconfig
     namespace: argocd
@@ -79,8 +81,18 @@ spec:
   labels:
     env: lab
     role: mgmt
-  releaseOnDelete: false           # keep the clusterbook reservation when the CR is deleted
+  releaseOnDelete: false                # keep the clusterbook reservation when the CR is deleted
 ```
+
+### Which server-URL mode to pick
+
+| Mode | When to use |
+|---|---|
+| **`preserveKubeconfigServer: true`** (recommended for most labs) | The target cluster's API lives at whatever address the kubeconfig reports (e.g. a node IP, or a pre-existing LB the kubeconfig already points at). The reservation + DNS are useful for IPAM/DNS bookkeeping and for templating into downstream workloads, but ArgoCD uses the kubeconfig URL to connect. |
+| `useFQDNAsServer: true` | The target cluster has **kube-vip / Cilium LB IPAM / MetalLB** bound to the clusterbook-reserved IP as a stable API endpoint — ArgoCD should connect through that stable URL so it survives node replacement. Needs cluster-side plumbing. |
+| neither set | Same idea as `useFQDNAsServer: true` but `data.server` uses the raw IP (`https://<ip>:6443`). Subject to TLS SAN mismatches unless the cert includes the IP. |
+
+In all three modes, clusterbook IP/FQDN/zone still land on the Secret as labels (`clusterbook.stuttgart-things.com/allocation-ip`, `/allocation-zone`) and annotations (`/ip`, `/fqdn`, `/zone`) for ApplicationSet selection and templating.
 
 Apply it:
 

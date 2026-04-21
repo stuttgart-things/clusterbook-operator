@@ -37,6 +37,19 @@ type ClusterbookClusterSpec struct {
 	// +optional
 	ServerSubdomain string `json:"serverSubdomain,omitempty"`
 
+	// PreserveKubeconfigServer keeps data.server on the cluster Secret
+	// set to whatever the referenced kubeconfig's current-context cluster
+	// uses, instead of rewriting it to the clusterbook-reserved IP/FQDN.
+	// Use this when the target cluster's API server lives at the
+	// kubeconfig's address and nothing on the target cluster is bound to
+	// the clusterbook reservation (no kube-vip, no Cilium LB for the API,
+	// etc.) — without it ArgoCD would fail to connect. The reservation
+	// is still made and DNS is still created; IP/FQDN/zone are still
+	// exposed on the Secret as labels and annotations for ApplicationSet
+	// selection and templating. Takes precedence over UseFQDNAsServer.
+	// +optional
+	PreserveKubeconfigServer bool `json:"preserveKubeconfigServer,omitempty"`
+
 	// KubeconfigSecretRef references a Secret holding the target cluster's
 	// kubeconfig. The controller extracts server/CA/auth from it and writes
 	// a new ArgoCD cluster Secret. Mutually exclusive with ExistingSecretRef.
