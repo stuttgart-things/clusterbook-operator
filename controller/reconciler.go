@@ -117,11 +117,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, fmt.Errorf("load kubeconfig: %w", err)
 		}
 
-		server := buildServerURL(&cr, ip, info)
-		argoCfg, caData, err := argoConfigFromKubeconfig(kcfg)
+		argoCfg, caData, kubeconfigServer, err := argoConfigFromKubeconfig(kcfg)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("extract kubeconfig: %w", err)
 		}
+		server := buildServerURL(&cr, ip, kubeconfigServer, info)
 
 		secret, err := r.upsertArgoSecret(ctx, &cr, ip, info, server, argoCfg, caData)
 		if err != nil {
@@ -235,19 +235,22 @@ type argoTLSClientConfig struct {
 
 type argoExecProviderConfig struct{}
 
-func argoConfigFromKubeconfig(raw []byte) ([]byte, []byte, error) {
+// argoConfigFromKubeconfig returns the ArgoCD cluster config JSON, the
+// CA data, and the kubeconfig's server URL (used as data.server when
+// spec.preserveKubeconfigServer is set).
+func argoConfigFromKubeconfig(raw []byte) ([]byte, []byte, string, error) {
 	cfg, err := clientcmd.Load(raw)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	ctxEntry, ok := cfg.Contexts[cfg.CurrentContext]
 	if !ok {
-		return nil, nil, fmt.Errorf("current-context %q missing", cfg.CurrentContext)
+		return nil, nil, "", fmt.Errorf("current-context %q missing", cfg.CurrentContext)
 	}
 	cluster := cfg.Clusters[ctxEntry.Cluster]
 	user := cfg.AuthInfos[ctxEntry.AuthInfo]
 	if cluster == nil || user == nil {
-		return nil, nil, fmt.Errorf("kubeconfig missing cluster or user")
+		return nil, nil, "", fmt.Errorf("kubeconfig missing cluster or user")
 	}
 
 	out := argoClusterConfig{
@@ -260,10 +263,15 @@ func argoConfigFromKubeconfig(raw []byte) ([]byte, []byte, error) {
 		},
 	}
 	b, err := json.Marshal(out)
-	return b, cluster.CertificateAuthorityData, err
+	return b, cluster.CertificateAuthorityData, cluster.Server, err
 }
 
-func buildServerURL(cr *argov1.ClusterbookCluster, ip string, info *cbkclient.ClusterInfo) string {
+func buildServerURL(cr *argov1.ClusterbookCluster, ip, kubeconfigServer string, info *cbkclient.ClusterInfo) string {
+	// preserveKubeconfigServer wins over every other mode — use the
+	// kubeconfig's current-context server verbatim.
+	if cr.Spec.PreserveKubeconfigServer && kubeconfigServer != "" {
+		return kubeconfigServer
+	}
 	port := cr.Spec.ServerPort
 	if port == 0 {
 		port = defaultPort
@@ -300,7 +308,10 @@ func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.Clusterboo
 		ns = defaultArgoNamespace
 	}
 
-	labels := map[string]string{argoSecretTypeLabel: argoSecretTypeValue}
+	labels := map[string]string{
+		argoSecretTypeLabel:            argoSecretTypeValue,
+		clusterbookPrefix + "allocation-ip": ip,
+	}
 	for k, v := range cr.Spec.Labels {
 		labels[k] = v
 	}
@@ -312,6 +323,9 @@ func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.Clusterboo
 		}
 		if info.Zone != "" {
 			annotations[annotationZone] = info.Zone
+			// Zone is a valid label value (no wildcards); expose it as a
+			// label too so ApplicationSets can select on it directly.
+			labels[clusterbookPrefix+"allocation-zone"] = info.Zone
 		}
 	}
 

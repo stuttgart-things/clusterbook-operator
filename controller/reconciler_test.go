@@ -251,6 +251,79 @@ func TestReconcileWildcardFQDN(t *testing.T) {
 	}
 }
 
+// TestReconcilePreserveKubeconfigServer — when preserveKubeconfigServer
+// is true, data.server must come straight from the kubeconfig's
+// current-context cluster, not from the clusterbook reservation. IP and
+// zone still land as labels/annotations so ApplicationSets can select
+// and template on them; useFQDNAsServer is overridden and ignored.
+func TestReconcilePreserveKubeconfigServer(t *testing.T) {
+	ctx := context.Background()
+	ensureArgoNamespace(ctx, t)
+
+	fake := newFakeClusterbook()
+	fake.fqdn = "*.preserve.example.com"
+	defer fake.server.Close()
+
+	mustCreate(ctx, t, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "kc-preserve", Namespace: "argocd"},
+		Data:       map[string][]byte{"kubeconfig": []byte(fakeKubeconfig)},
+	})
+	mustCreate(ctx, t, &argov1.ClusterbookProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "pc-preserve"},
+		Spec:       argov1.ClusterbookProviderConfigSpec{APIURL: fake.server.URL},
+	})
+	mustCreate(ctx, t, &argov1.ClusterbookCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "preserve"},
+		Spec: argov1.ClusterbookClusterSpec{
+			NetworkKey:               "10.0.0",
+			ClusterName:              "preserve",
+			CreateDNS:                true,
+			UseFQDNAsServer:          true, // must be overridden by preserveKubeconfigServer
+			PreserveKubeconfigServer: true,
+			KubeconfigSecretRef:      &argov1.SecretKeyRef{Name: "kc-preserve", Namespace: "argocd"},
+			ProviderConfigRef:        corev1.LocalObjectReference{Name: "pc-preserve"},
+			ArgoCDNamespace:          "argocd",
+			Labels:                   map[string]string{"env": "prod"},
+		},
+	})
+
+	r := &Reconciler{Client: k8sClient, Scheme: scheme}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "preserve"}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var sec corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "cluster-preserve", Namespace: "argocd"}, &sec); err != nil {
+		t.Fatalf("get Secret: %v", err)
+	}
+
+	// data.server must be the kubeconfig's server URL verbatim.
+	if got, want := string(sec.Data["server"]), "https://example.com:6443"; got != want {
+		t.Errorf("data.server = %q, want %q (kubeconfig's server preserved)", got, want)
+	}
+
+	// Allocation facts exposed as labels alongside the user's own label.
+	if got := sec.Labels["clusterbook.stuttgart-things.com/allocation-ip"]; got != "10.0.0.42" {
+		t.Errorf("allocation-ip label = %q, want 10.0.0.42", got)
+	}
+	if got := sec.Labels["clusterbook.stuttgart-things.com/allocation-zone"]; got != "example.com" {
+		t.Errorf("allocation-zone label = %q, want example.com", got)
+	}
+	if sec.Labels["env"] != "prod" {
+		t.Errorf("user label dropped: %v", sec.Labels)
+	}
+
+	// Annotations unchanged — still carry the wildcard FQDN for templating.
+	if got := sec.Annotations["clusterbook.stuttgart-things.com/fqdn"]; got != "*.preserve.example.com" {
+		t.Errorf("fqdn annotation = %q", got)
+	}
+
+	// Reservation still happened even though the server URL was preserved.
+	if fake.reserveCount() != 1 {
+		t.Errorf("reserve count = %d, want 1", fake.reserveCount())
+	}
+}
+
 func TestReconcileFinalizeReleasesIP(t *testing.T) {
 	ctx := context.Background()
 	ensureArgoNamespace(ctx, t)

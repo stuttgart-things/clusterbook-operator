@@ -110,6 +110,19 @@ spec:
               networkKey:
                 description: NetworkKey is the clusterbook network pool (e.g. "10.31.103").
                 type: string
+              preserveKubeconfigServer:
+                description: |-
+                  PreserveKubeconfigServer keeps data.server on the cluster Secret
+                  set to whatever the referenced kubeconfig's current-context cluster
+                  uses, instead of rewriting it to the clusterbook-reserved IP/FQDN.
+                  Use this when the target cluster's API server lives at the
+                  kubeconfig's address and nothing on the target cluster is bound to
+                  the clusterbook reservation (no kube-vip, no Cilium LB for the API,
+                  etc.) — without it ArgoCD would fail to connect. The reservation
+                  is still made and DNS is still created; IP/FQDN/zone are still
+                  exposed on the Secret as labels and annotations for ApplicationSet
+                  selection and templating. Takes precedence over UseFQDNAsServer.
+                type: boolean
               providerConfigRef:
                 description: |-
                   ProviderConfigRef points to a ClusterbookProviderConfig with the
