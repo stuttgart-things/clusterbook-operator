@@ -1,0 +1,34 @@
+# Reserve an IP (+ optional DNS) from clusterbook and publish the facts
+# into one or more sinks. No Service attachment, no Cilium pool — purely
+# "reserve and publish" so consumers like ArgoCD ApplicationSets can
+# template the IP/FQDN into their Applications.
+---
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookProviderConfig
+metadata:
+  name: default
+spec:
+  apiURL: https://clusterbook.example.com
+  insecureSkipVerify: false
+---
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookAllocation
+metadata:
+  name: app-frontend
+spec:
+  networkKey: "10.31.101"
+  name: app-frontend
+  createDNS: true
+  providerConfigRef:
+    name: default
+  sinks:
+    configMap:
+      name: app-frontend-allocation
+      namespace: argocd
+    # Optional second sink — enrich an existing ArgoCD cluster Secret
+    # with clusterbook-prefixed labels/annotations. Only uncomment if
+    # you have a cluster Secret to decorate.
+    # clusterSecretLabels:
+    #   name: cluster-prod-a
+    #   namespace: argocd
+  releaseOnDelete: false
