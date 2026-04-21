@@ -161,6 +161,53 @@ argocd cluster list
 
 (Cluster name in `argocd cluster list` comes from `data.name` — matches `spec.clusterName`.)
 
+### Smoke test — deploy guestbook
+
+Quickest way to prove the registration actually works, end-to-end — apply the canonical guestbook Application against the new cluster:
+
+```yaml
+# app-guestbook-ci-mgmt-t1.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: guestbook-ci-mgmt-t1
+  namespace: argocd
+spec:
+  project: ci-mgmt-t1           # or default — must allow this repo + destination
+  source:
+    repoURL: https://github.com/argoproj/argocd-example-apps.git
+    targetRevision: HEAD
+    path: guestbook
+  destination:
+    name: ci-mgmt-t1            # resolves to data.server via the cluster Secret (see note)
+    namespace: guestbook
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [ CreateNamespace=true, ServerSideApply=true ]
+```
+
+```bash
+kubectl apply -f app-guestbook-ci-mgmt-t1.yaml
+kubectl -n argocd get application guestbook-ci-mgmt-t1 -w
+```
+
+Expected: `SYNC=Synced` within a few seconds, then `HEALTH=Healthy` once the Deployment rolls out. Verify on the target cluster:
+
+```bash
+KUBECONFIG=~/.kube/ci-mgmt-t1 kubectl -n guestbook get pods,svc
+# NAME                              READY   STATUS    RESTARTS   AGE
+# pod/guestbook-ui-...              1/1     Running   0          1m
+# service/guestbook-ui              ClusterIP   …      80/TCP
+```
+
+Cleanup:
+```bash
+kubectl -n argocd delete application guestbook-ci-mgmt-t1
+KUBECONFIG=~/.kube/ci-mgmt-t1 kubectl delete ns guestbook
+```
+
+**`destination.name` vs `destination.server`:** prefer `name`. ArgoCD resolves it against the cluster Secret's `data.name` at runtime, so Applications keep working even if `data.server` changes later — e.g. when you flip `preserveKubeconfigServer` → `useFQDNAsServer`, or when the target cluster's node IP changes. Hardcoding a URL forces a rewrite on every Application manifest. The one requirement is that the target AppProject's `destinations:` allowlist contains an entry with a matching `name` — the `cluster-projects` ApplicationSet-generated projects already include one.
+
 ## Step 5 — Consume the cluster from an ApplicationSet
 
 The cluster Secret now satisfies the built-in Cluster generator. No plugin, no extra controller.
