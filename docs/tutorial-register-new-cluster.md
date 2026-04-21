@@ -13,7 +13,7 @@ After the last step:
 
 ## Prerequisites
 
-- `clusterbook-operator` installed on the ArgoCD cluster, **v0.12.1 or later** — see [Install](install.md).
+- `clusterbook-operator` installed on the ArgoCD cluster, **v0.12.2 or later** (earlier versions write an unresolvable wildcard into `data.server`) — see [Install](install.md).
 - `clusterbook` server **v1.25.1 or later** if you want `createDNS: true` to actually create a DNS record — see [Compatibility](compatibility.md).
 - A `ClusterbookProviderConfig` named `default` (or whatever name you'll reference) already applied, pointing at the clusterbook API.
 - A kubeconfig file on your workstation for the **new cluster** (not the ArgoCD cluster). Context already selected; single-cluster kubeconfigs work as-is, multi-cluster kubeconfigs need a `kubectl config view --minify --flatten --context=<ctx>` first.
@@ -70,6 +70,7 @@ spec:
   clusterName: ci-mgmt-t1
   createDNS: true                  # clusterbook → PowerDNS record
   useFQDNAsServer: true            # cluster Secret's data.server uses the FQDN, not the raw IP
+  # serverSubdomain: api           # optional, default "api" — substituted for the wildcard label in data.server
   kubeconfigSecretRef:
     name: ci-mgmt-t1-kubeconfig
     namespace: argocd
@@ -208,7 +209,7 @@ kubectl -n argocd delete secret ci-mgmt-t1-kubeconfig
 | `status.fqdn` stays empty with `createDNS: true` | clusterbook server < v1.25.1 — upgrade and recreate the CR. See [Compatibility](compatibility.md). |
 | Reconcile loop with `409 no available IPs in network` despite `status.ip` being set | operator < v0.12.1 — the older idempotency path re-tries Reserve when the listing's `cluster` field doesn't match. Upgrade. |
 | `argocd cluster list` shows the cluster but syncs fail with TLS errors | The kubeconfig's CA data is what's used for verification; the server URL is overridden. If the new cluster's cert doesn't include the FQDN as a SAN, either add it, set `useFQDNAsServer: false` so the raw IP is used (the IP likely isn't a SAN either — you'd need `insecure: true` in the ArgoCD config, not recommended), or regenerate the cert with both the IP and the clusterbook FQDN in SANs. |
-| `data.server` on the cluster Secret contains a literal `*.` (e.g. `https://*.ci-mgmt-t1...`) | Clusterbook returns the DNS record as a wildcard FQDN and the operator currently concatenates it as-is into `data.server`. Not a valid ArgoCD server URL — ArgoCD will DNS-fail on the `*.`. Workaround until [#71](https://github.com/stuttgart-things/clusterbook-operator/issues/71) lands: set `useFQDNAsServer: false` (server becomes `https://<ip>:6443` — subject to the TLS-SAN caveat above), or post-process the Secret with an admission webhook / kustomize patch that strips the `*.` and substitutes `api.` or the bare subdomain. |
+| `data.server` on the cluster Secret contains a literal `*.` (e.g. `https://*.ci-mgmt-t1...`) | Operator < v0.12.2. Fixed in v0.12.2 ([#72](https://github.com/stuttgart-things/clusterbook-operator/pull/72)): the wildcard label is substituted with `spec.serverSubdomain` (default `api`) so the URL renders as `https://api.<cluster>.<zone>:6443` and resolves through the same wildcard record. Upgrade to pick it up. On older versions: flip `useFQDNAsServer: false` (server becomes `https://<ip>:6443`, subject to the TLS-SAN caveat above), or post-process the Secret. |
 | ArgoCD ApplicationSet doesn't pick up the cluster | Check `spec.labels` on the CR and the Secret's labels — the selector matches on the Secret, not the CR. Also make sure the ArgoCD namespace in `spec.argocdNamespace` matches where your ApplicationSet looks. |
 
 ## Next steps
