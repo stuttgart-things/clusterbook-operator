@@ -25,10 +25,6 @@ import (
 
 const (
 	allocationFinalizer = "clusterbook.stuttgart-things.com/allocation-finalizer"
-
-	// allocationNameLabel tags an enriched cluster Secret with the
-	// allocation's spec.name so ApplicationSet selectors can target it.
-	allocationNameLabel = clusterbookPrefix + "allocation-name"
 )
 
 type AllocationReconciler struct {
@@ -177,6 +173,17 @@ func (r *AllocationReconciler) upsertConfigMapSink(ctx context.Context, cr *argo
 // Same contract as ClusterbookCluster enrich mode: data untouched, no
 // owner reference, prefix-scoped writes only — stripClusterSecret can
 // reverse it cleanly on delete. A missing Secret surfaces a condition.
+//
+// All writes are namespaced by the allocation's spec.name so multiple
+// allocations (and/or a ClusterbookCluster registration) can coexist on
+// the same Secret without overwriting each other's facts. Per allocation:
+//
+//   label   clusterbook.stuttgart-things.com/allocation-<name>         = "true"  (presence for selectors)
+//   label   clusterbook.stuttgart-things.com/allocation-<name>-ip      = <ip>    (IP as a selectable label)
+//   label   clusterbook.stuttgart-things.com/allocation-<name>-zone    = <zone>  (zone likewise; FQDN has "*" so it stays annotation-only)
+//   annot.  clusterbook.stuttgart-things.com/allocation-<name>-ip      = <ip>
+//   annot.  clusterbook.stuttgart-things.com/allocation-<name>-fqdn    = <fqdn>
+//   annot.  clusterbook.stuttgart-things.com/allocation-<name>-zone    = <zone>
 func (r *AllocationReconciler) enrichClusterSecret(ctx context.Context, cr *argov1.ClusterbookAllocation, ip string, info *cbkclient.ClusterInfo, ref *argov1.SecretObjectRef) error {
 	var secret corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}, &secret); err != nil {
@@ -198,14 +205,17 @@ func (r *AllocationReconciler) enrichClusterSecret(ctx context.Context, cr *argo
 	if secret.Annotations == nil {
 		secret.Annotations = map[string]string{}
 	}
-	secret.Labels[allocationNameLabel] = cr.Spec.Name
-	secret.Annotations[annotationIP] = ip
+	keyPrefix := clusterbookPrefix + "allocation-" + cr.Spec.Name
+	secret.Labels[keyPrefix] = "true"
+	secret.Labels[keyPrefix+"-ip"] = ip
+	secret.Annotations[keyPrefix+"-ip"] = ip
 	if info != nil {
 		if info.FQDN != "" {
-			secret.Annotations[annotationFQDN] = info.FQDN
+			secret.Annotations[keyPrefix+"-fqdn"] = info.FQDN
 		}
 		if info.Zone != "" {
-			secret.Annotations[annotationZone] = info.Zone
+			secret.Labels[keyPrefix+"-zone"] = info.Zone
+			secret.Annotations[keyPrefix+"-zone"] = info.Zone
 		}
 	}
 	return r.Update(ctx, &secret)
