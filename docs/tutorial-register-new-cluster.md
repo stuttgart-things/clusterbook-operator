@@ -254,6 +254,27 @@ kubectl apply -f lab-workloads-appset.yaml
 kubectl -n argocd get applications | grep workloads-ci-mgmt-t1
 ```
 
+## Bonus — Cilium LoadBalancer pool from the same reservation
+
+If the target cluster runs Cilium with LB IPAM, the IP already reserved for the cluster registration can double as the Cilium LB pool IP — no extra `ClusterbookAllocation`, no second reservation. ArgoCD uses the kubeconfig's URL to reach the API server (`preserveKubeconfigServer: true`), and the reserved `.20` (or whatever clusterbook handed out) is free to back a LoadBalancer Service on the target.
+
+Two flavors of the ApplicationSet pattern, pick whichever matches your fleet:
+
+| Pattern | When to use | Example |
+|---|---|---|
+| **Reuse the cluster-registration IP** | One IP per cluster — the clusterbook reservation serves both as the logical cluster endpoint and as the LB pool. The cleanest fit for small/lab clusters. | [`applicationset-cilium-lb-from-cluster-registration.yaml`](https://github.com/stuttgart-things/clusterbook-operator/blob/main/examples/applicationset-cilium-lb-from-cluster-registration.yaml) |
+| **Separate allocation per purpose** | Distinct IPs for API server vs. LB pool(s), or multiple LB pools on the same cluster. Uses `ClusterbookAllocation` with `clusterSecretLabels` — each allocation's facts land under `allocation-<name>-*` keys so they coexist with the cluster registration. | [`applicationset-cilium-lb-pool.yaml`](https://github.com/stuttgart-things/clusterbook-operator/blob/main/examples/applicationset-cilium-lb-pool.yaml) |
+
+Applied to `ci-mgmt-t1` with the first pattern:
+
+```bash
+kubectl apply -f examples/applicationset-cilium-lb-from-cluster-registration.yaml
+# on the target cluster:
+KUBECONFIG=~/.kube/ci-mgmt-t1 kubectl get ciliumloadbalancerippool
+# NAME               DISABLED   CONFLICTING   IPS AVAILABLE
+# ci-mgmt-t1-pool    false      False         1
+```
+
 ## Cleanup
 
 ```bash
