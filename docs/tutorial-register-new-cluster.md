@@ -88,6 +88,20 @@ Apply it:
 kubectl apply -f cr-ci-mgmt-t1.yaml
 ```
 
+### What the reconcile does on apply
+
+1. **Reserves an IP** from the `spec.networkKey` pool via clusterbook. The operator lists first and only reserves when no entry for `spec.clusterName` is already found — safe to re-apply.
+2. **Creates a PowerDNS record** (wildcard, e.g. `*.ci-mgmt-t1.sthings-vsphere.labul.sva.de` → reserved IP) because `createDNS: true`. Needs clusterbook ≥ v1.25.1 to actually propagate.
+3. **Builds `argocd/cluster-<spec.clusterName>`** from the kubeconfig Secret:
+   - `data.name` = `spec.clusterName`
+   - `data.server` = `https://<host>:6443` — `<host>` is the FQDN when `useFQDNAsServer: true`, otherwise the raw IP
+   - `data.config` — JSON derived from the kubeconfig (`bearerToken`, `tlsClientConfig.caData`, optional cert/key pair)
+   - Labels: everything from `spec.labels` verbatim, plus `argocd.argoproj.io/secret-type: cluster`
+   - Annotations: `clusterbook.stuttgart-things.com/ip`, `/fqdn`, `/zone`
+   - Owner reference back to the CR so the Secret is garbage-collected on CR delete.
+4. **Populates `.status`** on the CR: `ip`, `fqdn`, `zone`, `secretName`, plus a `Ready=True/Reconciled` condition. Everything you need for scripted verification is on the status.
+5. **Installs a finalizer** (`clusterbook.stuttgart-things.com/finalizer`). On CR delete the finalizer deletes the Secret and, if `releaseOnDelete: true`, releases the clusterbook reservation. `releaseOnDelete: false` keeps the reservation around — preferred on first runs so a stray delete doesn't drop an IP you were about to reuse.
+
 ## Step 4 — Verify
 
 The CR should go `Ready=True` within a few seconds:
@@ -95,9 +109,9 @@ The CR should go `Ready=True` within a few seconds:
 ```bash
 kubectl get clusterbookcluster ci-mgmt-t1 \
   -o jsonpath='{"IP:  "}{.status.ip}{"\nFQDN: "}{.status.fqdn}{"\nZone: "}{.status.zone}{"\nReady: "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}'
-# IP:   10.31.104.42
-# FQDN: *.ci-mgmt-t1.labul.sva.de
-# Zone: labul.sva.de
+# IP:   10.31.104.20
+# FQDN: *.ci-mgmt-t1.sthings-vsphere.labul.sva.de
+# Zone: sthings-vsphere.labul.sva.de
 # Ready: True
 ```
 
@@ -194,6 +208,7 @@ kubectl -n argocd delete secret ci-mgmt-t1-kubeconfig
 | `status.fqdn` stays empty with `createDNS: true` | clusterbook server < v1.25.1 — upgrade and recreate the CR. See [Compatibility](compatibility.md). |
 | Reconcile loop with `409 no available IPs in network` despite `status.ip` being set | operator < v0.12.1 — the older idempotency path re-tries Reserve when the listing's `cluster` field doesn't match. Upgrade. |
 | `argocd cluster list` shows the cluster but syncs fail with TLS errors | The kubeconfig's CA data is what's used for verification; the server URL is overridden. If the new cluster's cert doesn't include the FQDN as a SAN, either add it, set `useFQDNAsServer: false` so the raw IP is used (the IP likely isn't a SAN either — you'd need `insecure: true` in the ArgoCD config, not recommended), or regenerate the cert with both the IP and the clusterbook FQDN in SANs. |
+| `data.server` on the cluster Secret contains a literal `*.` (e.g. `https://*.ci-mgmt-t1...`) | Clusterbook returns the DNS record as a wildcard FQDN and the operator currently concatenates it as-is into `data.server`. Not a valid ArgoCD server URL — ArgoCD will DNS-fail on the `*.`. Workaround until [an operator fix](https://github.com/stuttgart-things/clusterbook-operator/issues) lands: set `useFQDNAsServer: false` (server becomes `https://<ip>:6443` — subject to the TLS-SAN caveat above), or post-process the Secret with an admission webhook / kustomize patch that strips the `*.` and substitutes `api.` or the bare subdomain. |
 | ArgoCD ApplicationSet doesn't pick up the cluster | Check `spec.labels` on the CR and the Secret's labels — the selector matches on the Secret, not the CR. Also make sure the ArgoCD namespace in `spec.argocdNamespace` matches where your ApplicationSet looks. |
 
 ## Next steps
