@@ -13,7 +13,7 @@ After the last step:
 
 ## Prerequisites
 
-- `clusterbook-operator` installed on the ArgoCD cluster, **v0.12.1 or later** — see [Install](install.md).
+- `clusterbook-operator` installed on the ArgoCD cluster, **v0.12.2 or later** (earlier versions write an unresolvable wildcard into `data.server`) — see [Install](install.md).
 - `clusterbook` server **v1.25.1 or later** if you want `createDNS: true` to actually create a DNS record — see [Compatibility](compatibility.md).
 - A `ClusterbookProviderConfig` named `default` (or whatever name you'll reference) already applied, pointing at the clusterbook API.
 - A kubeconfig file on your workstation for the **new cluster** (not the ArgoCD cluster). Context already selected; single-cluster kubeconfigs work as-is, multi-cluster kubeconfigs need a `kubectl config view --minify --flatten --context=<ctx>` first.
