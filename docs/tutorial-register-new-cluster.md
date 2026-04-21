@@ -81,8 +81,18 @@ spec:
   labels:
     env: lab
     role: mgmt
+    # auto-project: "true"              # example — match whatever your fleet's ApplicationSets select on
   releaseOnDelete: false                # keep the clusterbook reservation when the CR is deleted
 ```
+
+### Match `spec.labels` to your fleet's ApplicationSet selectors
+
+`spec.labels` land on the cluster Secret unchanged (not prefixed), so ArgoCD's built-in Cluster generator can select on them directly. Which labels you need depends on **whatever ApplicationSets already run in your fleet**. On a typical `stuttgart-things/argocd` install that's often:
+
+- `auto-project: "true"` — picked up by the `cluster-projects` ApplicationSet, auto-provisions a matching `AppProject` per cluster
+- `env`, `tier`, `allow-all` — read by workload ApplicationSets as selector or template input
+
+If you omit the selector label your ApplicationSets expect, the cluster will register correctly but **no Applications will materialise for it** — the ApplicationSet's generator simply won't match the Secret. Check `kubectl -n argocd get applicationset -o yaml` for the exact `selector.matchLabels` in use, then mirror those into `spec.labels` here. (Labels can be edited after the fact — re-apply the CR with additions and the Secret picks them up on the next reconcile.)
 
 ### Which server-URL mode to pick
 
