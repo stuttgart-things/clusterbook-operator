@@ -3,6 +3,7 @@ site_description: Kubernetes operator that turns clusterbook reservations into C
 nav:
   - Home: index.md
   - Install: install.md
+  - Tutorial - Register a cluster: tutorial-register-new-cluster.md
   - Cluster registration: usage.md
   - LoadBalancer: loadbalancer.md
   - Allocation: allocation.md
