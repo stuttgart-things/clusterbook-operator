@@ -76,10 +76,10 @@ spec:
 
 ## What's inside the bundle
 
-- 2 `CustomResourceDefinition` — `ClusterbookCluster`, `ClusterbookProviderConfig`
+- 4 `CustomResourceDefinition` — `ClusterbookCluster`, `ClusterbookLoadBalancer`, `ClusterbookAllocation`, `ClusterbookProviderConfig`
 - `Namespace clusterbook-system`
 - `ServiceAccount clusterbook-operator`
-- `ClusterRole` + `ClusterRoleBinding` — watch CRDs, read kubeconfig Secrets across namespaces, write Secrets in the ArgoCD namespace, manage leader-election Leases
+- `ClusterRole` + `ClusterRoleBinding` — watch the CRDs, read kubeconfig Secrets across namespaces, create/update ArgoCD cluster Secrets and allocation ConfigMaps, manage `CiliumLoadBalancerIPPool`s, manage leader-election Leases
 - `Deployment clusterbook-operator` — distroless, non-root, `/healthz` + `/readyz` probes
 
 ## Verify
@@ -102,13 +102,7 @@ kubectl apply -k /tmp/cbk
 kubectl -n clusterbook-system rollout status deploy/clusterbook-operator --timeout=120s
 ```
 
-> **Known upgrade caveat** (tracked in [#53](https://github.com/stuttgart-things/clusterbook-operator/issues/53)): the bundle currently pins the operator image to `:latest`, so `apply -k` between versions is a no-op from Kubernetes' perspective — the Deployment spec doesn't change, no rollout is triggered, and the running pod keeps whatever `:latest` layer was cached on the node. Until that's fixed at release time, force the version explicitly after the apply:
->
-> ```bash
-> kubectl -n clusterbook-system set image deployment/clusterbook-operator \
->   manager=ghcr.io/stuttgart-things/clusterbook-operator:<new-version>
-> kubectl -n clusterbook-system rollout status deploy/clusterbook-operator --timeout=120s
-> ```
+From **v0.12.1** onward the bundle pins the exact image tag, so `apply -k` triggers a normal rollout between versions. Earlier releases pinned `:latest`, which required an explicit `kubectl -n clusterbook-system set image …` workaround (tracked in [#53](https://github.com/stuttgart-things/clusterbook-operator/issues/53) — fixed in v0.12.1, see [#66](https://github.com/stuttgart-things/clusterbook-operator/pull/66)).
 
 Verify the running image matches what you expect:
 
@@ -117,15 +111,26 @@ kubectl -n clusterbook-system get deploy clusterbook-operator \
   -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
 ```
 
+### Clusterbook server compatibility
+
+Some operator features depend on the clusterbook server version. In particular, any CR with `createDNS: true` needs **clusterbook ≥ v1.25.1** — earlier versions silently dropped the flag on the Reserve path and left reservations without an FQDN. See [Compatibility](compatibility.md) for the full matrix.
+
+### Operator-side reservation idempotency
+
+From v0.12.1 the reconcilers trust `cr.Status.IP` as the source of truth on every tick. This protects against clusterbook listing drift (e.g. a reservation whose `cluster` field gets rewritten server-side): once the CR has successfully reserved an IP, repeated reconciles return the stored value instead of re-matching against the listing and potentially triggering duplicate `Reserve` calls. See [#67](https://github.com/stuttgart-things/clusterbook-operator/pull/67) for background.
+
 ## Uninstall
 
 ```bash
 kubectl delete -k /tmp/cbk
 ```
 
-CRDs stay by default. To also delete the schemas (and with them every remaining `ClusterbookCluster` CR):
+CRDs stay by default. To also delete the schemas (and with them every remaining CR of those kinds):
 
 ```bash
-kubectl delete crd clusterbookclusters.clusterbook.stuttgart-things.com \
-                    clusterbookproviderconfigs.clusterbook.stuttgart-things.com
+kubectl delete crd \
+  clusterbookclusters.clusterbook.stuttgart-things.com \
+  clusterbookloadbalancers.clusterbook.stuttgart-things.com \
+  clusterbookallocations.clusterbook.stuttgart-things.com \
+  clusterbookproviderconfigs.clusterbook.stuttgart-things.com
 ```
