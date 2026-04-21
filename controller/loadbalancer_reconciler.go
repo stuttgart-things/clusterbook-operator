@@ -169,10 +169,15 @@ func (r *LoadBalancerReconciler) finalize(ctx context.Context, cr *argov1.Cluste
 	return ctrl.Result{}, r.Update(ctx, cr)
 }
 
-// ensureReservation — same defensive pattern as the ClusterbookCluster
-// reconciler. Look up any existing reservation for this name before
-// calling Reserve so repeated reconciles don't burn IPs.
+// ensureReservation — same layered strategy as the ClusterbookCluster
+// reconciler: trust cr.Status.IP once set (robust against clusterbook
+// rewriting the listing's Cluster field, e.g. to "DNS" when
+// createDNS=true), then fall back to name-matched listing lookup, then
+// reserve. Prevents repeated reconciles from burning IPs.
 func (r *LoadBalancerReconciler) ensureReservation(ctx context.Context, api *cbkclient.Client, cr *argov1.ClusterbookLoadBalancer) (string, error) {
+	if cr.Status.IP != "" {
+		return cr.Status.IP, nil
+	}
 	existing, err := api.GetIPs(ctx, cr.Spec.NetworkKey)
 	if err != nil {
 		return "", fmt.Errorf("list IPs: %w", err)

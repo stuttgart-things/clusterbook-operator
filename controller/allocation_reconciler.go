@@ -232,8 +232,14 @@ func (r *AllocationReconciler) stripClusterSecret(ctx context.Context, ref argov
 	return r.Update(ctx, &secret)
 }
 
-// ensureReservation — same defensive pattern as the sibling reconcilers.
+// ensureReservation — same layered strategy as the sibling reconcilers:
+// trust cr.Status.IP once set (robust against clusterbook rewriting the
+// listing's Cluster field, e.g. to "DNS" when createDNS=true), then fall
+// back to name-matched listing lookup, then reserve.
 func (r *AllocationReconciler) ensureReservation(ctx context.Context, api *cbkclient.Client, cr *argov1.ClusterbookAllocation) (string, error) {
+	if cr.Status.IP != "" {
+		return cr.Status.IP, nil
+	}
 	existing, err := api.GetIPs(ctx, cr.Spec.NetworkKey)
 	if err != nil {
 		return "", fmt.Errorf("list IPs: %w", err)

@@ -228,3 +228,17 @@ func (f *fakeClusterbook) lastUpdate() cbkclient.ReserveRequest {
 	}
 	return f.updates[len(f.updates)-1]
 }
+
+// mangleCluster rewrites the listing's "cluster" field for a given IP —
+// reproduces a clusterbook bug seen in production where reservations
+// made with createDNS=true come back in /ips with cluster="DNS" instead
+// of the requested name. Used by regression tests to verify the
+// reconciler's ensureReservation falls back to trusting cr.Status.IP
+// rather than the unreliable name match.
+func (f *fakeClusterbook) mangleCluster(ip, newCluster string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st := f.state[ip]
+	st.cluster = newCluster
+	f.state[ip] = st
+}
