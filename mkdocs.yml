@@ -3,9 +3,11 @@ site_description: Kubernetes operator that turns clusterbook reservations into C
 nav:
   - Home: index.md
   - Install: install.md
-  - LoadBalancer: loadbalancer.md
   - Cluster registration: usage.md
+  - LoadBalancer: loadbalancer.md
+  - Allocation: allocation.md
   - Configuration: configuration.md
+  - Compatibility: compatibility.md
   - Smoke Test: smoke-test.md
   - Development: development.md
 plugins:

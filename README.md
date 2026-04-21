@@ -1,52 +1,18 @@
 # clusterbook-operator
 
-A Kubernetes controller that turns [clusterbook](https://github.com/stuttgart-things/clusterbook)
-entries into [ArgoCD](https://argo-cd.readthedocs.io/) cluster Secrets so that
-ApplicationSets can fan out across fleets via the built-in **Cluster**
-generator — no custom generator plugin required.
+A Kubernetes operator for [clusterbook](https://github.com/stuttgart-things/clusterbook) — reserves IPs (and optional PowerDNS records) and materialises them as the Kubernetes objects that actually consume them.
 
-## What it does
+## Three CRDs at a glance
 
-```
-ClusterbookCluster (CR)         -->   Secret (argocd.argoproj.io/secret-type=cluster)
-  networkKey                           name:   <clusterName>
-  clusterName                          server: https://<ip|fqdn>:6443
-  createDNS                            config: {...from kubeconfigSecretRef...}
-  kubeconfigSecretRef                  labels: <propagated from CR>
-  labels
-  providerConfigRef
-```
+| CRD | Use case | Output |
+|---|---|---|
+| **`ClusterbookCluster`** | Register a Kubernetes cluster in ArgoCD with a clusterbook-backed IP/FQDN | `Secret` with `argocd.argoproj.io/secret-type=cluster` — or **enrich mode** decorates an externally-managed Secret |
+| **`ClusterbookLoadBalancer`** | Give a Cilium LoadBalancer Service a stable IP (+ optional DNS) | `CiliumLoadBalancerIPPool` — or `serviceRef` mode patches `.spec.loadBalancerIP` on an existing Service |
+| **`ClusterbookAllocation`** | Pure "reserve and publish" — no Service attachment, no kubeconfig | `ConfigMap` with `ip`/`fqdn`/`zone` keys — and/or prefixed labels on an existing ArgoCD cluster Secret |
 
-## Reconcile loop
+All three share `ClusterbookProviderConfig` for the clusterbook API endpoint + TLS options and annotate their output with `clusterbook.stuttgart-things.com/ip` / `/fqdn` / `/zone` for downstream discovery.
 
-1. Resolve `providerConfigRef` — clusterbook API URL + TLS options.
-2. `ReserveIPs` against clusterbook (idempotent — returns the existing IP
-   when the cluster already has one).
-3. `GetClusterInfo` to pick up FQDN and zone.
-4. Load kubeconfig from the referenced Secret, extract `server`, CA, and
-   auth material; build the ArgoCD `config` JSON.
-5. Create or update `Secret cluster-<clusterName>` in the ArgoCD namespace
-   with label `argocd.argoproj.io/secret-type: cluster` plus the labels
-   declared on the CR.
-6. On deletion (finalizer): delete the Secret, then `ReleaseIPs`
-   (best-effort, gated by `releaseOnDelete`).
-
-## Relation to provider-clusterbook
-
-[`provider-clusterbook`](https://github.com/stuttgart-things/xplane-provider-clusterbook)
-is the Crossplane provider for the same clusterbook API. It is independent:
-same upstream API, different control plane.
-
-- **Crossplane provider** — reserve IPs / create DNS records from
-  Crossplane compositions. Useful inside Crossplane-driven cluster
-  provisioning.
-- **clusterbook-operator** (this repo) — turn clusterbook entries into
-  ArgoCD cluster secrets so ApplicationSets pick them up. Useful when
-  Argo is the delivery control plane.
-
-The REST client at `pkg/client` was copied (not forked) from
-`provider-clusterbook/internal/client`. Both projects evolve independently
-against the clusterbook API.
+Full docs: [index](docs/index.md) · [install](docs/install.md) · [cluster registration](docs/usage.md) · [loadbalancer](docs/loadbalancer.md) · [allocation](docs/allocation.md) · [compatibility](docs/compatibility.md).
 
 ## Install
 
@@ -54,20 +20,16 @@ The released kustomize OCI bundle ships all CRDs, RBAC, and the Deployment. One 
 
 ```bash
 mkdir -p /tmp/cbk
-flux pull artifact oci://ghcr.io/stuttgart-things/clusterbook-operator-kustomize:v0.7.2 --output /tmp/cbk
+flux pull artifact oci://ghcr.io/stuttgart-things/clusterbook-operator-kustomize:v0.12.1 --output /tmp/cbk
 kubectl apply -k /tmp/cbk
 kubectl -n clusterbook-system rollout status deploy/clusterbook-operator --timeout=120s
 ```
 
-> **Upgrade caveat:** the bundle currently pins the image to `:latest`, so `apply -k` alone won't trigger a rollout between versions (see [#53](https://github.com/stuttgart-things/clusterbook-operator/issues/53)). For now, force the image tag explicitly after the apply:
->
-> ```bash
-> kubectl -n clusterbook-system set image deployment/clusterbook-operator \
->   manager=ghcr.io/stuttgart-things/clusterbook-operator:v0.7.2
-> kubectl -n clusterbook-system rollout status deploy/clusterbook-operator --timeout=120s
-> ```
+From v0.12.1 the bundle pins the exact image tag, so `kubectl apply -k` triggers a normal rollout between versions — no `set image` workaround needed.
 
 Full install details and alternative tooling (`oras`, flux-kustomize-controller) in [`docs/install.md`](docs/install.md).
+
+**Requires clusterbook server v1.25.1 or later** when using `createDNS: true`. See [`docs/compatibility.md`](docs/compatibility.md) for the version matrix.
 
 ## Consuming from an ApplicationSet
 
@@ -85,11 +47,17 @@ spec:
   template: ...
 ```
 
-See [`examples/clusterbookcluster.yaml`](examples/clusterbookcluster.yaml)
-for a full CR + ApplicationSet pairing.
+See [`examples/clusterbookcluster.yaml`](examples/clusterbookcluster.yaml) for a full CR + ApplicationSet pairing, and [`examples/applicationset-cilium-lb-pool.yaml`](examples/applicationset-cilium-lb-pool.yaml) for the Cilium LB pool pattern driven by `ClusterbookAllocation` + the Cluster generator.
+
+## Relation to provider-clusterbook
+
+[`provider-clusterbook`](https://github.com/stuttgart-things/xplane-provider-clusterbook) is the Crossplane provider for the same clusterbook API. It is independent: same upstream API, different control plane.
+
+- **Crossplane provider** — reserve IPs / create DNS records from Crossplane compositions. Useful inside Crossplane-driven cluster provisioning.
+- **clusterbook-operator** (this repo) — turn clusterbook entries into `CiliumLoadBalancerIPPool` / ArgoCD cluster Secrets / ConfigMaps. Useful when Argo is the delivery control plane.
+
+The REST client at `pkg/client` was copied (not forked) from `provider-clusterbook/internal/client`. Both projects evolve independently against the clusterbook API.
 
 ## Status
 
-Sketch. Not yet wired up: deepcopy codegen, CRD manifests under
-`config/crd`, container image, chart. Run `make generate` to produce
-generated code and CRDs.
+Shipping. Three CRDs in `v1alpha1`, kustomize OCI bundle published per release at `ghcr.io/stuttgart-things/clusterbook-operator-kustomize`. See [the releases page](https://github.com/stuttgart-things/clusterbook-operator/releases) for the latest version.
