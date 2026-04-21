@@ -28,6 +28,26 @@ spec:
     region: eu-central-1
   releaseOnDelete: false
 ---
+# Enrich mode — don't create the ArgoCD cluster Secret, just decorate one
+# that already exists with clusterbook-prefixed labels and annotations.
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookCluster
+metadata:
+  name: externally-managed
+spec:
+  networkKey: "10.31.103"
+  clusterName: externally-managed
+  createDNS: true
+  existingSecretRef:
+    name: cluster-externally-managed
+    namespace: argocd
+  providerConfigRef:
+    name: default
+  labels:
+    env: smoke-test
+    region: eu-central-1
+  releaseOnDelete: false
+---
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:

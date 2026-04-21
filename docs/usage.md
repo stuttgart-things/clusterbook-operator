@@ -106,3 +106,53 @@ spec:
 ```
 
 Every `ClusterbookCluster` with matching labels gets an Application automatically.
+
+## 5. Enrich mode — for externally-managed ArgoCD cluster Secrets
+
+If your ArgoCD cluster Secrets are already managed by something else (manual, Crossplane, another operator), point `ClusterbookCluster` at them with `existingSecretRef` instead of `kubeconfigSecretRef`. The operator still reserves an IP and (optionally) DNS, but only merges metadata under `clusterbook.stuttgart-things.com/` — it never touches the Secret's `data` fields and never takes ownership.
+
+```yaml
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookCluster
+metadata:
+  name: externally-managed
+spec:
+  networkKey: "10.31.103"
+  clusterName: externally-managed
+  createDNS: true
+  existingSecretRef:
+    name: cluster-externally-managed
+    namespace: argocd
+  providerConfigRef:
+    name: default
+  labels:
+    env: smoke-test
+    region: eu-central-1
+  releaseOnDelete: false
+```
+
+Exactly one of `kubeconfigSecretRef` or `existingSecretRef` must be set — the CRD rejects specs with both or neither.
+
+**What enrich mode writes** to the referenced Secret:
+
+```yaml
+metadata:
+  labels:
+    argocd.argoproj.io/secret-type: cluster                  # untouched
+    some-team-label: foo                                     # untouched
+    clusterbook.stuttgart-things.com/env: smoke-test         # from spec.labels.env
+    clusterbook.stuttgart-things.com/region: eu-central-1    # from spec.labels.region
+  annotations:
+    clusterbook.stuttgart-things.com/ip: 10.31.103.42
+    clusterbook.stuttgart-things.com/fqdn: externally-managed.example.com
+    clusterbook.stuttgart-things.com/zone: example.com
+```
+
+Differences from the default (create) mode:
+
+- `data.name`, `data.server`, `data.config` are **never** written — the Secret's auth material is owned elsewhere.
+- No owner reference is set — deleting the CR does not delete the Secret.
+- `spec.labels` land under the `clusterbook.stuttgart-things.com/` prefix so ApplicationSet selectors must match on the prefixed form.
+- `useFQDNAsServer` is ignored (the `server` field is whatever the existing Secret has).
+- On CR delete the operator removes only the labels and annotations it added under its prefix; everything else stays.
+- If the referenced Secret is missing the reconciler surfaces `Ready=False` / `ExistingSecretNotFound` rather than error-looping.

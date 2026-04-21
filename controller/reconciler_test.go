@@ -74,7 +74,7 @@ func TestReconcileGoldenPath(t *testing.T) {
 		Spec: argov1.ClusterbookClusterSpec{
 			NetworkKey:          "10.0.0",
 			ClusterName:         "golden",
-			KubeconfigSecretRef: argov1.SecretKeyRef{Name: "kc-golden", Namespace: "argocd"},
+			KubeconfigSecretRef: &argov1.SecretKeyRef{Name: "kc-golden", Namespace: "argocd"},
 			ProviderConfigRef:   corev1.LocalObjectReference{Name: "pc-golden"},
 			ArgoCDNamespace:     "argocd",
 			Labels:              map[string]string{"env": "test"},
@@ -147,7 +147,7 @@ func TestReconcileUseFQDNAsServer(t *testing.T) {
 			ClusterName:         "fqdn-cluster",
 			CreateDNS:           true,
 			UseFQDNAsServer:     true,
-			KubeconfigSecretRef: argov1.SecretKeyRef{Name: "kc-fqdn", Namespace: "argocd"},
+			KubeconfigSecretRef: &argov1.SecretKeyRef{Name: "kc-fqdn", Namespace: "argocd"},
 			ProviderConfigRef:   corev1.LocalObjectReference{Name: "pc-fqdn"},
 			ArgoCDNamespace:     "argocd",
 		},
@@ -193,7 +193,7 @@ func TestReconcileFinalizeReleasesIP(t *testing.T) {
 		Spec: argov1.ClusterbookClusterSpec{
 			NetworkKey:          "10.0.0",
 			ClusterName:         "finalize-me",
-			KubeconfigSecretRef: argov1.SecretKeyRef{Name: "kc-finalize", Namespace: "argocd"},
+			KubeconfigSecretRef: &argov1.SecretKeyRef{Name: "kc-finalize", Namespace: "argocd"},
 			ProviderConfigRef:   corev1.LocalObjectReference{Name: "pc-finalize"},
 			ArgoCDNamespace:     "argocd",
 			ReleaseOnDelete:     true,
@@ -251,7 +251,7 @@ func TestReconcileDriftTriggersUpdate(t *testing.T) {
 			NetworkKey:          "10.0.0",
 			ClusterName:         "drift-cluster",
 			CreateDNS:           false,
-			KubeconfigSecretRef: argov1.SecretKeyRef{Name: "kc-drift", Namespace: "argocd"},
+			KubeconfigSecretRef: &argov1.SecretKeyRef{Name: "kc-drift", Namespace: "argocd"},
 			ProviderConfigRef:   corev1.LocalObjectReference{Name: "pc-drift"},
 			ArgoCDNamespace:     "argocd",
 		},
@@ -321,7 +321,7 @@ func TestReconcileReleaseOnDeleteOff(t *testing.T) {
 		Spec: argov1.ClusterbookClusterSpec{
 			NetworkKey:          "10.0.0",
 			ClusterName:         "keep-ip",
-			KubeconfigSecretRef: argov1.SecretKeyRef{Name: "kc-keep", Namespace: "argocd"},
+			KubeconfigSecretRef: &argov1.SecretKeyRef{Name: "kc-keep", Namespace: "argocd"},
 			ProviderConfigRef:   corev1.LocalObjectReference{Name: "pc-keep"},
 			ArgoCDNamespace:     "argocd",
 			// ReleaseOnDelete defaults to false
@@ -369,7 +369,7 @@ func TestReconcileParallel(t *testing.T) {
 			Spec: argov1.ClusterbookClusterSpec{
 				NetworkKey:          "10.0.0",
 				ClusterName:         name,
-				KubeconfigSecretRef: argov1.SecretKeyRef{Name: "kc-" + name, Namespace: "argocd"},
+				KubeconfigSecretRef: &argov1.SecretKeyRef{Name: "kc-" + name, Namespace: "argocd"},
 				ProviderConfigRef:   corev1.LocalObjectReference{Name: "pc-parallel"},
 				ArgoCDNamespace:     "argocd",
 			},
@@ -431,7 +431,7 @@ func TestReconcileReservesOnlyOnce(t *testing.T) {
 		Spec: argov1.ClusterbookClusterSpec{
 			NetworkKey:          "10.0.0",
 			ClusterName:         "once",
-			KubeconfigSecretRef: argov1.SecretKeyRef{Name: "kc-once", Namespace: "argocd"},
+			KubeconfigSecretRef: &argov1.SecretKeyRef{Name: "kc-once", Namespace: "argocd"},
 			ProviderConfigRef:   corev1.LocalObjectReference{Name: "pc-once"},
 			ArgoCDNamespace:     "argocd",
 		},
@@ -449,5 +449,183 @@ func TestReconcileReservesOnlyOnce(t *testing.T) {
 	}
 	if n := len(fake.reservedIPs()); n != 1 {
 		t.Errorf("unique reserved IPs = %d, want 1", n)
+	}
+}
+
+// TestReconcileEnrichExistingSecret — in enrich mode the operator must
+// merge prefixed labels/annotations onto a pre-existing Secret that it
+// does NOT own, leaving data and non-prefixed metadata untouched.
+func TestReconcileEnrichExistingSecret(t *testing.T) {
+	ctx := context.Background()
+	ensureArgoNamespace(ctx, t)
+
+	fake := newFakeClusterbook()
+	fake.fqdn = "enriched.example.com"
+	defer fake.server.Close()
+
+	preExisting := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cluster-pre-existing",
+			Namespace: "argocd",
+			Labels: map[string]string{
+				"argocd.argoproj.io/secret-type": "cluster",
+				"some-team-label":                "foo",
+			},
+			Annotations: map[string]string{
+				"team.example.com/owner": "platform",
+			},
+		},
+		Data: map[string][]byte{
+			"name":   []byte("pre-existing"),
+			"server": []byte("https://10.99.99.99:6443"),
+			"config": []byte(`{"tlsClientConfig":{"insecure":true}}`),
+		},
+	}
+	mustCreate(ctx, t, preExisting)
+
+	mustCreate(ctx, t, &argov1.ClusterbookProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "pc-enrich"},
+		Spec:       argov1.ClusterbookProviderConfigSpec{APIURL: fake.server.URL},
+	})
+	mustCreate(ctx, t, &argov1.ClusterbookCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "enrich"},
+		Spec: argov1.ClusterbookClusterSpec{
+			NetworkKey:        "10.0.0",
+			ClusterName:       "enrich",
+			CreateDNS:         true,
+			ExistingSecretRef: &argov1.SecretObjectRef{Name: "cluster-pre-existing", Namespace: "argocd"},
+			ProviderConfigRef: corev1.LocalObjectReference{Name: "pc-enrich"},
+			Labels:            map[string]string{"env": "smoke-test"},
+		},
+	})
+
+	r := &Reconciler{Client: k8sClient, Scheme: scheme}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "enrich"}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var got corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "cluster-pre-existing", Namespace: "argocd"}, &got); err != nil {
+		t.Fatalf("get enriched secret: %v", err)
+	}
+
+	if got.Labels["argocd.argoproj.io/secret-type"] != "cluster" {
+		t.Errorf("pre-existing argocd label lost; got %v", got.Labels)
+	}
+	if got.Labels["some-team-label"] != "foo" {
+		t.Errorf("pre-existing team label lost; got %v", got.Labels)
+	}
+	if v := got.Labels["clusterbook.stuttgart-things.com/env"]; v != "smoke-test" {
+		t.Errorf("enrich label missing; got %v", got.Labels)
+	}
+	if got.Annotations["team.example.com/owner"] != "platform" {
+		t.Errorf("pre-existing annotation lost; got %v", got.Annotations)
+	}
+	if v := got.Annotations["clusterbook.stuttgart-things.com/ip"]; v != "10.0.0.42" {
+		t.Errorf("ip annotation = %q, want 10.0.0.42", v)
+	}
+	if v := got.Annotations["clusterbook.stuttgart-things.com/fqdn"]; v != "enriched.example.com" {
+		t.Errorf("fqdn annotation = %q, want enriched.example.com", v)
+	}
+
+	if string(got.Data["server"]) != "https://10.99.99.99:6443" {
+		t.Errorf("data.server mutated: %q", got.Data["server"])
+	}
+	if string(got.Data["name"]) != "pre-existing" {
+		t.Errorf("data.name mutated: %q", got.Data["name"])
+	}
+	if len(got.OwnerReferences) != 0 {
+		t.Errorf("enrich mode set owner references: %v", got.OwnerReferences)
+	}
+
+	var fresh argov1.ClusterbookCluster
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "enrich"}, &fresh); err != nil {
+		t.Fatalf("get CR: %v", err)
+	}
+	if fresh.Status.IP != "10.0.0.42" {
+		t.Errorf("status.ip = %q", fresh.Status.IP)
+	}
+	if fresh.Status.SecretName != "cluster-pre-existing" {
+		t.Errorf("status.secretName = %q, want cluster-pre-existing", fresh.Status.SecretName)
+	}
+}
+
+// TestReconcileEnrichDeleteStripsOwnLabels — on CR deletion the operator
+// must remove every label and annotation it added under its prefix, but
+// leave the Secret and any foreign metadata intact.
+func TestReconcileEnrichDeleteStripsOwnLabels(t *testing.T) {
+	ctx := context.Background()
+	ensureArgoNamespace(ctx, t)
+
+	fake := newFakeClusterbook()
+	defer fake.server.Close()
+
+	pre := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cluster-enrich-strip",
+			Namespace: "argocd",
+			Labels: map[string]string{
+				"argocd.argoproj.io/secret-type": "cluster",
+				"keep-me":                        "yes",
+			},
+			Annotations: map[string]string{
+				"keep-annotation": "yes",
+			},
+		},
+		Data: map[string][]byte{"name": []byte("enrich-strip")},
+	}
+	mustCreate(ctx, t, pre)
+
+	mustCreate(ctx, t, &argov1.ClusterbookProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "pc-strip"},
+		Spec:       argov1.ClusterbookProviderConfigSpec{APIURL: fake.server.URL},
+	})
+	cr := &argov1.ClusterbookCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "enrich-strip"},
+		Spec: argov1.ClusterbookClusterSpec{
+			NetworkKey:        "10.0.0",
+			ClusterName:       "enrich-strip",
+			ExistingSecretRef: &argov1.SecretObjectRef{Name: "cluster-enrich-strip", Namespace: "argocd"},
+			ProviderConfigRef: corev1.LocalObjectReference{Name: "pc-strip"},
+			Labels:            map[string]string{"env": "prod"},
+		},
+	}
+	mustCreate(ctx, t, cr)
+
+	r := &Reconciler{Client: k8sClient, Scheme: scheme}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "enrich-strip"}}); err != nil {
+		t.Fatalf("initial reconcile: %v", err)
+	}
+
+	if err := k8sClient.Delete(ctx, cr); err != nil {
+		t.Fatalf("delete CR: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "enrich-strip"}}); err != nil {
+		t.Fatalf("finalize reconcile: %v", err)
+	}
+
+	var got corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "cluster-enrich-strip", Namespace: "argocd"}, &got); err != nil {
+		t.Fatalf("expected Secret to remain after finalize, got err=%v", err)
+	}
+
+	for k := range got.Labels {
+		if len(k) >= len("clusterbook.stuttgart-things.com/") && k[:len("clusterbook.stuttgart-things.com/")] == "clusterbook.stuttgart-things.com/" {
+			t.Errorf("clusterbook-prefixed label remained: %s", k)
+		}
+	}
+	for k := range got.Annotations {
+		if len(k) >= len("clusterbook.stuttgart-things.com/") && k[:len("clusterbook.stuttgart-things.com/")] == "clusterbook.stuttgart-things.com/" {
+			t.Errorf("clusterbook-prefixed annotation remained: %s", k)
+		}
+	}
+	if got.Labels["keep-me"] != "yes" {
+		t.Errorf("foreign label stripped: %v", got.Labels)
+	}
+	if got.Labels["argocd.argoproj.io/secret-type"] != "cluster" {
+		t.Errorf("argocd label stripped: %v", got.Labels)
+	}
+	if got.Annotations["keep-annotation"] != "yes" {
+		t.Errorf("foreign annotation stripped: %v", got.Annotations)
 	}
 }

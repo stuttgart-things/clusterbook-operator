@@ -30,9 +30,10 @@ const (
 	defaultArgoNamespace = "argocd"
 	defaultPort          = 6443
 
-	annotationIP   = "clusterbook.stuttgart-things.com/ip"
-	annotationFQDN = "clusterbook.stuttgart-things.com/fqdn"
-	annotationZone = "clusterbook.stuttgart-things.com/zone"
+	clusterbookPrefix = "clusterbook.stuttgart-things.com/"
+	annotationIP      = clusterbookPrefix + "ip"
+	annotationFQDN    = clusterbookPrefix + "fqdn"
+	annotationZone    = clusterbookPrefix + "zone"
 )
 
 type Reconciler struct {
@@ -86,34 +87,61 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	info, _ := api.GetClusterInfo(ctx, cr.Spec.ClusterName)
 
-	kcfg, err := r.loadKubeconfig(ctx, cr.Spec.KubeconfigSecretRef)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("load kubeconfig: %w", err)
-	}
+	var secretName string
+	if cr.Spec.ExistingSecretRef != nil {
+		ref := *cr.Spec.ExistingSecretRef
+		notFound, err := r.enrichExistingSecret(ctx, &cr, ip, info)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("enrich existing secret: %w", err)
+		}
+		if notFound {
+			setCondition(&cr.Status.Conditions, metav1.Condition{
+				Type:               "Ready",
+				Status:             metav1.ConditionFalse,
+				Reason:             "ExistingSecretNotFound",
+				Message:            fmt.Sprintf("secret %s/%s not found", ref.Namespace, ref.Name),
+				LastTransitionTime: metav1.Now(),
+			})
+		} else {
+			setCondition(&cr.Status.Conditions, metav1.Condition{
+				Type:               "Ready",
+				Status:             metav1.ConditionTrue,
+				Reason:             "Reconciled",
+				LastTransitionTime: metav1.Now(),
+			})
+		}
+		secretName = ref.Name
+	} else {
+		kcfg, err := r.loadKubeconfig(ctx, *cr.Spec.KubeconfigSecretRef)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("load kubeconfig: %w", err)
+		}
 
-	server := buildServerURL(&cr, ip, info)
-	argoCfg, caData, err := argoConfigFromKubeconfig(kcfg)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("extract kubeconfig: %w", err)
-	}
+		server := buildServerURL(&cr, ip, info)
+		argoCfg, caData, err := argoConfigFromKubeconfig(kcfg)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("extract kubeconfig: %w", err)
+		}
 
-	secret, err := r.upsertArgoSecret(ctx, &cr, ip, info, server, argoCfg, caData)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("upsert argo secret: %w", err)
+		secret, err := r.upsertArgoSecret(ctx, &cr, ip, info, server, argoCfg, caData)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("upsert argo secret: %w", err)
+		}
+		secretName = secret.Name
+		setCondition(&cr.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionTrue,
+			Reason:             "Reconciled",
+			LastTransitionTime: metav1.Now(),
+		})
 	}
 
 	cr.Status.IP = ip
-	cr.Status.SecretName = secret.Name
+	cr.Status.SecretName = secretName
 	if info != nil {
 		cr.Status.FQDN = info.FQDN
 		cr.Status.Zone = info.Zone
 	}
-	setCondition(&cr.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
-		Status:             metav1.ConditionTrue,
-		Reason:             "Reconciled",
-		LastTransitionTime: metav1.Now(),
-	})
 	if err := r.Status().Update(ctx, &cr); err != nil {
 		lg.Error(err, "status update failed")
 	}
@@ -125,13 +153,19 @@ func (r *Reconciler) finalize(ctx context.Context, cr *argov1.ClusterbookCluster
 		return ctrl.Result{}, nil
 	}
 
-	ns := cr.Spec.ArgoCDNamespace
-	if ns == "" {
-		ns = defaultArgoNamespace
+	if cr.Spec.ExistingSecretRef != nil {
+		if err := r.stripEnrichedMetadata(ctx, *cr.Spec.ExistingSecretRef); err != nil {
+			return ctrl.Result{}, fmt.Errorf("strip enriched metadata: %w", err)
+		}
+	} else {
+		ns := cr.Spec.ArgoCDNamespace
+		if ns == "" {
+			ns = defaultArgoNamespace
+		}
+		_ = r.Delete(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: argoSecretName(cr), Namespace: ns},
+		})
 	}
-	_ = r.Delete(ctx, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: argoSecretName(cr), Namespace: ns},
-	})
 
 	if cr.Spec.ReleaseOnDelete && cr.Status.IP != "" {
 		if err := api.ReleaseIPs(ctx, cr.Spec.NetworkKey, cbkclient.ReleaseRequest{IP: cr.Status.IP}); err != nil {
@@ -293,6 +327,74 @@ func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.Clusterboo
 		return nil, err
 	}
 	return secret, nil
+}
+
+// enrichExistingSecret merges clusterbook-prefixed labels and annotations
+// onto an ArgoCD cluster Secret that the operator does NOT own — another
+// system (Crossplane, manual, another operator) created it, and clusterbook
+// is only contributing metadata so ApplicationSet selectors can target it.
+//
+// Invariants for enrich mode:
+//   - data (name/server/config) is never touched
+//   - no controller reference — the Secret's lifecycle is not ours
+//   - everything we write is under clusterbookPrefix so stripEnrichedMetadata
+//     can reverse it cleanly on delete
+//
+// Returns notFound=true if the referenced Secret is missing; the caller
+// surfaces this via a condition rather than erroring the reconcile.
+func (r *Reconciler) enrichExistingSecret(ctx context.Context, cr *argov1.ClusterbookCluster, ip string, info *cbkclient.ClusterInfo) (bool, error) {
+	ref := *cr.Spec.ExistingSecretRef
+	var secret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}, &secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+		return false, err
+	}
+
+	if secret.Labels == nil {
+		secret.Labels = map[string]string{}
+	}
+	if secret.Annotations == nil {
+		secret.Annotations = map[string]string{}
+	}
+	for k, v := range cr.Spec.Labels {
+		secret.Labels[clusterbookPrefix+k] = v
+	}
+	secret.Annotations[annotationIP] = ip
+	if info != nil {
+		if info.FQDN != "" {
+			secret.Annotations[annotationFQDN] = info.FQDN
+		}
+		if info.Zone != "" {
+			secret.Annotations[annotationZone] = info.Zone
+		}
+	}
+	return false, r.Update(ctx, &secret)
+}
+
+// stripEnrichedMetadata removes every label and annotation under
+// clusterbookPrefix from the referenced Secret. The Secret itself stays.
+// A missing Secret is a no-op — nothing to strip.
+func (r *Reconciler) stripEnrichedMetadata(ctx context.Context, ref argov1.SecretObjectRef) error {
+	var secret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}, &secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	for k := range secret.Labels {
+		if strings.HasPrefix(k, clusterbookPrefix) {
+			delete(secret.Labels, k)
+		}
+	}
+	for k := range secret.Annotations {
+		if strings.HasPrefix(k, clusterbookPrefix) {
+			delete(secret.Annotations, k)
+		}
+	}
+	return r.Update(ctx, &secret)
 }
 
 // ensureReservation returns the IP already reserved for this cluster in
