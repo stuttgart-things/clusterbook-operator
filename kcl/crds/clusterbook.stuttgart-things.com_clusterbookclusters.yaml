@@ -63,6 +63,13 @@ spec:
                   ClusterName is the cluster identifier registered in clusterbook.
                   Used as the ArgoCD cluster name and as the IP reservation key.
                 type: string
+              clusterType:
+                description: |-
+                  ClusterType is a free-form discriminator written to the ArgoCD cluster
+                  Secret as the label clusterbook.stuttgart-things.com/cluster-type.
+                  Used by ApplicationSet selectors to fan out type-specific platform
+                  bundles (e.g. "kind", "vsphere", "talos"). Optional.
+                type: string
               createDNS:
                 description: CreateDNS asks clusterbook to create a wildcard DNS record.
                 type: boolean
@@ -107,6 +114,36 @@ spec:
                   clusterbook.stuttgart-things.com/ prefix. Use them as selectors in
                   ApplicationSet cluster generators.
                 type: object
+              lbRange:
+                description: |-
+                  LBRange optionally reserves a contiguous IP range (in addition to the
+                  primary allocated IP) intended for LoadBalancer pools — e.g. a Cilium
+                  CiliumLoadBalancerIPPool block. Resolved range is exposed on the
+                  Secret as the annotations clusterbook.stuttgart-things.com/lb-range-start
+                  and /lb-range-stop. Optional.
+                properties:
+                  count:
+                    description: |-
+                      Count is the number of contiguous IPs to reserve from networkKey in
+                      addition to the primary cluster IP. Mutually exclusive with Start/Stop.
+                    minimum: 1
+                    type: integer
+                  start:
+                    description: |-
+                      Start, Stop pin the range verbatim — typical for kind clusters whose
+                      LoadBalancer IPs come from the docker bridge network rather than the
+                      clusterbook pool. When set, the operator does NOT reserve them from
+                      networkKey, only writes them through to the Secret. Both must be set
+                      together. Mutually exclusive with Count.
+                    type: string
+                  stop:
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: exactly one of lbRange.count or lbRange.start+stop must
+                    be set
+                  rule: '(has(self.count) && self.count > 0 ? 1 : 0) + (has(self.start)
+                    && has(self.stop) ? 1 : 0) == 1'
               networkKey:
                 description: NetworkKey is the clusterbook network pool (e.g. "10.31.103").
                 type: string
@@ -233,6 +270,15 @@ spec:
               fqdn:
                 type: string
               ip:
+                type: string
+              lbRangeStart:
+                description: |-
+                  LBRangeStart, LBRangeStop record the resolved LoadBalancer range so
+                  repeat reconciles in operator-allocated mode (spec.lbRange.count > 0)
+                  don't re-reserve the range. In user-pinned mode they mirror
+                  spec.lbRange.start/stop.
+                type: string
+              lbRangeStop:
                 type: string
               secretName:
                 type: string

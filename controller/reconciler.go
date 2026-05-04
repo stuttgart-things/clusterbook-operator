@@ -30,11 +30,25 @@ const (
 	defaultArgoNamespace = "argocd"
 	defaultPort          = 6443
 
-	clusterbookPrefix = "clusterbook.stuttgart-things.com/"
-	annotationIP      = clusterbookPrefix + "ip"
-	annotationFQDN    = clusterbookPrefix + "fqdn"
-	annotationZone    = clusterbookPrefix + "zone"
+	clusterbookPrefix        = "clusterbook.stuttgart-things.com/"
+	annotationIP             = clusterbookPrefix + "ip"
+	annotationFQDN           = clusterbookPrefix + "fqdn"
+	annotationZone           = clusterbookPrefix + "zone"
+	annotationClusterName    = clusterbookPrefix + "cluster-name"
+	annotationLBRangeStart   = clusterbookPrefix + "lb-range-start"
+	annotationLBRangeStop    = clusterbookPrefix + "lb-range-stop"
+	labelClusterType         = clusterbookPrefix + "cluster-type"
 )
+
+// allocation bundles everything ensureReservation resolves: the primary
+// cluster IP plus the optional LoadBalancer range. Carrying both through
+// the reconcile lets upsertArgoSecret/enrichExistingSecret stay agnostic to
+// whether the range was operator-allocated (Count) or user-pinned (Start/Stop).
+type allocation struct {
+	IP           string
+	LBRangeStart string
+	LBRangeStop  string
+}
 
 type Reconciler struct {
 	client.Client
@@ -76,10 +90,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 
-	ip, err := r.ensureReservation(ctx, api, &cr)
+	alloc, err := r.ensureReservation(ctx, api, &cr)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	ip := alloc.IP
 
 	if err := r.reconcileDNSDrift(ctx, api, &cr, ip); err != nil {
 		return ctrl.Result{}, err
@@ -90,7 +105,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	var secretName string
 	if cr.Spec.ExistingSecretRef != nil {
 		ref := *cr.Spec.ExistingSecretRef
-		notFound, err := r.enrichExistingSecret(ctx, &cr, ip, info)
+		notFound, err := r.enrichExistingSecret(ctx, &cr, alloc, info)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("enrich existing secret: %w", err)
 		}
@@ -123,7 +138,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		server := buildServerURL(&cr, ip, kubeconfigServer, info)
 
-		secret, err := r.upsertArgoSecret(ctx, &cr, ip, info, server, argoCfg, caData)
+		secret, err := r.upsertArgoSecret(ctx, &cr, alloc, info, server, argoCfg, caData)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("upsert argo secret: %w", err)
 		}
@@ -138,6 +153,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	cr.Status.IP = ip
 	cr.Status.SecretName = secretName
+	cr.Status.LBRangeStart = alloc.LBRangeStart
+	cr.Status.LBRangeStop = alloc.LBRangeStop
 	if info != nil {
 		cr.Status.FQDN = info.FQDN
 		cr.Status.Zone = info.Zone
@@ -302,21 +319,33 @@ func argoSecretName(cr *argov1.ClusterbookCluster) string {
 	return "cluster-" + cr.Spec.ClusterName
 }
 
-func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.ClusterbookCluster, ip string, info *cbkclient.ClusterInfo, server string, cfgJSON, _ []byte) (*corev1.Secret, error) {
+func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.ClusterbookCluster, alloc allocation, info *cbkclient.ClusterInfo, server string, cfgJSON, _ []byte) (*corev1.Secret, error) {
 	ns := cr.Spec.ArgoCDNamespace
 	if ns == "" {
 		ns = defaultArgoNamespace
 	}
 
 	labels := map[string]string{
-		argoSecretTypeLabel:            argoSecretTypeValue,
-		clusterbookPrefix + "allocation-ip": ip,
+		argoSecretTypeLabel:                 argoSecretTypeValue,
+		clusterbookPrefix + "allocation-ip": alloc.IP,
+	}
+	if cr.Spec.ClusterType != "" {
+		labels[labelClusterType] = cr.Spec.ClusterType
 	}
 	for k, v := range cr.Spec.Labels {
 		labels[k] = v
 	}
 
-	annotations := map[string]string{annotationIP: ip}
+	annotations := map[string]string{
+		annotationIP:          alloc.IP,
+		annotationClusterName: cr.Spec.ClusterName,
+	}
+	if alloc.LBRangeStart != "" {
+		annotations[annotationLBRangeStart] = alloc.LBRangeStart
+	}
+	if alloc.LBRangeStop != "" {
+		annotations[annotationLBRangeStop] = alloc.LBRangeStop
+	}
 	if info != nil {
 		if info.FQDN != "" {
 			annotations[annotationFQDN] = info.FQDN
@@ -371,7 +400,7 @@ func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.Clusterboo
 //
 // Returns notFound=true if the referenced Secret is missing; the caller
 // surfaces this via a condition rather than erroring the reconcile.
-func (r *Reconciler) enrichExistingSecret(ctx context.Context, cr *argov1.ClusterbookCluster, ip string, info *cbkclient.ClusterInfo) (bool, error) {
+func (r *Reconciler) enrichExistingSecret(ctx context.Context, cr *argov1.ClusterbookCluster, alloc allocation, info *cbkclient.ClusterInfo) (bool, error) {
 	ref := *cr.Spec.ExistingSecretRef
 	var secret corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}, &secret); err != nil {
@@ -390,7 +419,17 @@ func (r *Reconciler) enrichExistingSecret(ctx context.Context, cr *argov1.Cluste
 	for k, v := range cr.Spec.Labels {
 		secret.Labels[clusterbookPrefix+k] = v
 	}
-	secret.Annotations[annotationIP] = ip
+	if cr.Spec.ClusterType != "" {
+		secret.Labels[labelClusterType] = cr.Spec.ClusterType
+	}
+	secret.Annotations[annotationIP] = alloc.IP
+	secret.Annotations[annotationClusterName] = cr.Spec.ClusterName
+	if alloc.LBRangeStart != "" {
+		secret.Annotations[annotationLBRangeStart] = alloc.LBRangeStart
+	}
+	if alloc.LBRangeStop != "" {
+		secret.Annotations[annotationLBRangeStop] = alloc.LBRangeStop
+	}
 	if info != nil {
 		if info.FQDN != "" {
 			secret.Annotations[annotationFQDN] = info.FQDN
@@ -442,31 +481,85 @@ func (r *Reconciler) stripEnrichedMetadata(ctx context.Context, ref argov1.Secre
 //     reservation before risking a duplicate Reserve call.
 //
 //  3. Reserve — only if neither of the above found a reservation.
-func (r *Reconciler) ensureReservation(ctx context.Context, api *cbkclient.Client, cr *argov1.ClusterbookCluster) (string, error) {
+func (r *Reconciler) ensureReservation(ctx context.Context, api *cbkclient.Client, cr *argov1.ClusterbookCluster) (allocation, error) {
 	if cr.Status.IP != "" {
-		return cr.Status.IP, nil
+		return allocation{
+			IP:           cr.Status.IP,
+			LBRangeStart: resolvedLBStart(cr),
+			LBRangeStop:  resolvedLBStop(cr),
+		}, nil
 	}
 	existing, err := api.GetIPs(ctx, cr.Spec.NetworkKey)
 	if err != nil {
-		return "", fmt.Errorf("list IPs: %w", err)
+		return allocation{}, fmt.Errorf("list IPs: %w", err)
 	}
 	for _, e := range existing {
 		if e.Cluster == cr.Spec.ClusterName {
-			return e.IP, nil
+			// Listing recovers the primary IP only — the LB range, if any,
+			// is not distinguishable from any other reservation in the same
+			// pool. User-pinned ranges still come from spec; operator-
+			// allocated ranges fall through to a fresh Reserve below only
+			// when status hasn't been written yet, which is the expected
+			// cold-start case.
+			a := allocation{IP: e.IP}
+			if cr.Spec.LBRange != nil && cr.Spec.LBRange.Start != "" {
+				a.LBRangeStart = cr.Spec.LBRange.Start
+				a.LBRangeStop = cr.Spec.LBRange.Stop
+			}
+			return a, nil
 		}
+	}
+
+	count := 1
+	if cr.Spec.LBRange != nil && cr.Spec.LBRange.Count > 0 {
+		count = 1 + cr.Spec.LBRange.Count
 	}
 	resv, err := api.ReserveIPs(ctx, cr.Spec.NetworkKey, cbkclient.ReserveRequest{
 		Cluster:   cr.Spec.ClusterName,
-		Count:     1,
+		Count:     count,
 		CreateDNS: cr.Spec.CreateDNS,
 	})
 	if err != nil {
-		return "", fmt.Errorf("reserve IP: %w", err)
+		return allocation{}, fmt.Errorf("reserve IP: %w", err)
 	}
 	if len(resv.IPs) == 0 {
-		return "", fmt.Errorf("clusterbook returned no IPs")
+		return allocation{}, fmt.Errorf("clusterbook returned no IPs")
 	}
-	return resv.IPs[0], nil
+	a := allocation{IP: resv.IPs[0]}
+	if cr.Spec.LBRange != nil {
+		switch {
+		case cr.Spec.LBRange.Start != "":
+			a.LBRangeStart = cr.Spec.LBRange.Start
+			a.LBRangeStop = cr.Spec.LBRange.Stop
+		case len(resv.IPs) > 1:
+			a.LBRangeStart = resv.IPs[1]
+			a.LBRangeStop = resv.IPs[len(resv.IPs)-1]
+		}
+	}
+	return a, nil
+}
+
+// resolvedLBStart returns the LB range start for a CR whose primary IP is
+// already in status. User-pinned ranges come straight from spec; operator-
+// allocated ranges are read back from status (recorded on first reserve).
+func resolvedLBStart(cr *argov1.ClusterbookCluster) string {
+	if cr.Spec.LBRange == nil {
+		return ""
+	}
+	if cr.Spec.LBRange.Start != "" {
+		return cr.Spec.LBRange.Start
+	}
+	return cr.Status.LBRangeStart
+}
+
+func resolvedLBStop(cr *argov1.ClusterbookCluster) string {
+	if cr.Spec.LBRange == nil {
+		return ""
+	}
+	if cr.Spec.LBRange.Stop != "" {
+		return cr.Spec.LBRange.Stop
+	}
+	return cr.Status.LBRangeStop
 }
 
 // reconcileDNSDrift compares the observed createDNS state on the clusterbook
