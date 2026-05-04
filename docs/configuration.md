@@ -24,6 +24,10 @@
 | `argocdNamespace` | string | `argocd` | Where the generated cluster Secret is written |
 | `labels` | `map[string]string` | `{}` | Labels copied onto the cluster Secret — use in ApplicationSet selectors |
 | `releaseOnDelete` | bool | `false` | Release the clusterbook IP when the CR is deleted |
+| `clusterType` | string | — | Free-form discriminator written as the label `clusterbook.stuttgart-things.com/cluster-type` (e.g. `kind`, `vsphere`). Lets ApplicationSet selectors fan out type-specific platform bundles |
+| `lbRange.count` | int | — | Reserve `1 + count` IPs in a single call; the extras land as annotations `…/lb-range-start` and `…/lb-range-stop`. Mutually exclusive with `start`/`stop` |
+| `lbRange.start` | string | — | User-pinned LB range start (e.g. an IP from the docker bridge for kind). When set, the operator does NOT reserve from `networkKey`. Requires `stop` |
+| `lbRange.stop` | string | — | User-pinned LB range stop. Requires `start` |
 
 ## `ClusterbookCluster` status
 
@@ -32,8 +36,26 @@
 | `ip` | Reserved IP returned by clusterbook |
 | `fqdn` | FQDN returned by `/api/v1/clusters/{name}` (empty without DNS) |
 | `zone` | DNS zone returned by the same endpoint |
+| `lbRangeStart` | First LB IP. Mirrors `spec.lbRange.start` when user-pinned; recorded from the reservation result when operator-allocated |
+| `lbRangeStop` | Last LB IP — see `lbRangeStart` |
 | `secretName` | Name of the ArgoCD cluster Secret (always `cluster-<clusterName>`) |
 | `conditions[type=Ready]` | `True` after a successful reconcile |
+
+## Cluster Secret labels and annotations
+
+The operator writes (and on CR delete strips, in enrich mode) the following keys under the `clusterbook.stuttgart-things.com/` prefix:
+
+| Key | Kind | Source |
+|---|---|---|
+| `cluster-type` | label | `spec.clusterType` (only when set) |
+| `allocation-ip` | label | reserved IP — non-enrich (create) mode only |
+| `allocation-zone` | label | DNS zone — non-enrich (create) mode, only when zone is known |
+| `ip` | annotation | reserved IP |
+| `fqdn` | annotation | FQDN from clusterbook (only when known) |
+| `zone` | annotation | DNS zone (only when known) |
+| `cluster-name` | annotation | `spec.clusterName` — always |
+| `lb-range-start` | annotation | resolved LB range start (only when `lbRange` is set) |
+| `lb-range-stop` | annotation | resolved LB range stop (only when `lbRange` is set) |
 
 ## `ClusterbookLoadBalancer` spec
 
