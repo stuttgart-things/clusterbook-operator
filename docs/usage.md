@@ -133,6 +133,79 @@ spec:
 
 Exactly one of `kubeconfigSecretRef` or `existingSecretRef` must be set — the CRD rejects specs with both or neither.
 
+## 6. Multi-cluster-type fan-out (`clusterType` + `lbRange`)
+
+When the same Argo control plane registers heterogeneous clusters (kind for dev, vSphere/Talos for prod) and you want a different platform bundle per type, two optional fields on `ClusterbookCluster` carry the routing:
+
+- **`spec.clusterType`** — free-form string written as the label `clusterbook.stuttgart-things.com/cluster-type`. ApplicationSets select on it via `matchLabels: { clusterbook.stuttgart-things.com/cluster-type: kind }`.
+- **`spec.lbRange`** — contiguous IP range to attach to the Secret as the annotations `clusterbook.stuttgart-things.com/lb-range-start` and `…/lb-range-stop`. Two mutually exclusive modes:
+  - **User-pinned (`start` + `stop`)** — typical for kind: LoadBalancer IPs come from the docker bridge network, not the clusterbook pool. The operator does not reserve them, only writes them through.
+  - **Operator-allocated (`count`)** — typical for vSphere/Talos: the operator reserves `1 + count` IPs from `networkKey` in a single call, exposes the first as `status.ip`, and records the range as `status.lbRangeStart` / `status.lbRangeStop` so subsequent reconciles don't re-reserve.
+
+```yaml
+# kind — user-pinned docker-bridge range
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookCluster
+metadata:
+  name: kind-dev-a
+spec:
+  networkKey: "10.31.103"
+  clusterName: kind-dev-a
+  clusterType: kind
+  preserveKubeconfigServer: true
+  kubeconfigSecretRef:
+    name: kind-dev-a-kubeconfig
+    namespace: argocd
+    key: kubeconfig
+  providerConfigRef:
+    name: default
+  lbRange:
+    start: 172.18.255.200
+    stop:  172.18.255.250
+---
+# vSphere — operator carves a 4-IP LB block from the same pool
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookCluster
+metadata:
+  name: vsphere-prod-a
+spec:
+  networkKey: "10.31.103"
+  clusterName: vsphere-prod-a
+  clusterType: vsphere
+  createDNS: true
+  useFQDNAsServer: true
+  kubeconfigSecretRef:
+    name: vsphere-prod-a-kubeconfig
+    namespace: argocd
+    key: kubeconfig
+  providerConfigRef:
+    name: default
+  lbRange:
+    count: 4
+```
+
+**Consuming the range from an ApplicationSet** — pair `clusterType` selection with the range annotations to template a `CiliumLoadBalancerIPPool`:
+
+```yaml
+generators:
+  - clusters:
+      selector:
+        matchLabels:
+          clusterbook.stuttgart-things.com/cluster-type: kind
+template:
+  spec:
+    source:
+      helm:
+        valuesObject:
+          blocks:
+            - start: '{{ index .metadata.annotations "clusterbook.stuttgart-things.com/lb-range-start" }}'
+              stop:  '{{ index .metadata.annotations "clusterbook.stuttgart-things.com/lb-range-stop" }}'
+```
+
+In addition to the cluster-type/lb-range metadata, every reconcile also writes the annotation `clusterbook.stuttgart-things.com/cluster-name` (= `spec.clusterName`) so ApplicationSet templates can rely on it instead of the generator's `{{ .name }}`. All keys remain under the `clusterbook.stuttgart-things.com/` prefix and are stripped on CR delete in enrich mode.
+
+Full side-by-side example: [`examples/clusterbookcluster-kind.yaml`](https://github.com/stuttgart-things/clusterbook-operator/blob/main/examples/clusterbookcluster-kind.yaml).
+
 **What enrich mode writes** to the referenced Secret:
 
 ```yaml
