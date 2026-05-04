@@ -603,6 +603,68 @@ func TestReconcileReservesOnlyOnce(t *testing.T) {
 	}
 }
 
+// TestReconcileClusterTypeAndPinnedLBRange — when spec.clusterType and a
+// user-pinned spec.lbRange are set, the cluster-type label and the
+// cluster-name / lb-range-start / lb-range-stop annotations land on the
+// owned Secret, and no extra clusterbook reservation is made for the range.
+func TestReconcileClusterTypeAndPinnedLBRange(t *testing.T) {
+	ctx := context.Background()
+	ensureArgoNamespace(ctx, t)
+
+	fake := newFakeClusterbook()
+	defer fake.server.Close()
+
+	mustCreate(ctx, t, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "kc-kind", Namespace: "argocd"},
+		Data:       map[string][]byte{"kubeconfig": []byte(fakeKubeconfig)},
+	})
+	mustCreate(ctx, t, &argov1.ClusterbookProviderConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "pc-kind"},
+		Spec:       argov1.ClusterbookProviderConfigSpec{APIURL: fake.server.URL},
+	})
+	mustCreate(ctx, t, &argov1.ClusterbookCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "kind-a"},
+		Spec: argov1.ClusterbookClusterSpec{
+			NetworkKey:          "10.0.0",
+			ClusterName:         "kind-a",
+			ClusterType:         "kind",
+			KubeconfigSecretRef: &argov1.SecretKeyRef{Name: "kc-kind", Namespace: "argocd"},
+			ProviderConfigRef:   corev1.LocalObjectReference{Name: "pc-kind"},
+			ArgoCDNamespace:     "argocd",
+			LBRange: &argov1.LBRange{
+				Start: "172.18.255.200",
+				Stop:  "172.18.255.250",
+			},
+		},
+	})
+
+	r := &Reconciler{Client: k8sClient, Scheme: scheme}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "kind-a"}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var sec corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "cluster-kind-a", Namespace: "argocd"}, &sec); err != nil {
+		t.Fatalf("get Secret: %v", err)
+	}
+	if got := sec.Labels["clusterbook.stuttgart-things.com/cluster-type"]; got != "kind" {
+		t.Errorf("cluster-type label = %q, want kind", got)
+	}
+	if got := sec.Annotations["clusterbook.stuttgart-things.com/cluster-name"]; got != "kind-a" {
+		t.Errorf("cluster-name annotation = %q, want kind-a", got)
+	}
+	if got := sec.Annotations["clusterbook.stuttgart-things.com/lb-range-start"]; got != "172.18.255.200" {
+		t.Errorf("lb-range-start = %q", got)
+	}
+	if got := sec.Annotations["clusterbook.stuttgart-things.com/lb-range-stop"]; got != "172.18.255.250" {
+		t.Errorf("lb-range-stop = %q", got)
+	}
+	// User-pinned range — operator must reserve only the primary IP.
+	if n := fake.reserveCount(); n != 1 {
+		t.Errorf("reserve count = %d, want 1 (user-pinned range must not consume from pool)", n)
+	}
+}
+
 // TestReconcileEnrichExistingSecret — in enrich mode the operator must
 // merge prefixed labels/annotations onto a pre-existing Secret that it
 // does NOT own, leaving data and non-prefixed metadata untouched.

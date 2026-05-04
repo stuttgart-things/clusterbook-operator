@@ -83,6 +83,44 @@ type ClusterbookClusterSpec struct {
 	// ReleaseOnDelete releases the clusterbook IP when the CR is deleted.
 	// +optional
 	ReleaseOnDelete bool `json:"releaseOnDelete,omitempty"`
+
+	// ClusterType is a free-form discriminator written to the ArgoCD cluster
+	// Secret as the label clusterbook.stuttgart-things.com/cluster-type.
+	// Used by ApplicationSet selectors to fan out type-specific platform
+	// bundles (e.g. "kind", "vsphere", "talos"). Optional.
+	// +optional
+	ClusterType string `json:"clusterType,omitempty"`
+
+	// LBRange optionally reserves a contiguous IP range (in addition to the
+	// primary allocated IP) intended for LoadBalancer pools — e.g. a Cilium
+	// CiliumLoadBalancerIPPool block. Resolved range is exposed on the
+	// Secret as the annotations clusterbook.stuttgart-things.com/lb-range-start
+	// and /lb-range-stop. Optional.
+	// +optional
+	LBRange *LBRange `json:"lbRange,omitempty"`
+}
+
+// LBRange describes a LoadBalancer IP range to attach to the cluster Secret.
+// Either Count (operator reserves the range from the clusterbook pool) or the
+// Start/Stop pair (user pins the range verbatim) must be supplied; they are
+// mutually exclusive.
+// +kubebuilder:validation:XValidation:rule="(has(self.count) && self.count > 0 ? 1 : 0) + (has(self.start) && has(self.stop) ? 1 : 0) == 1",message="exactly one of lbRange.count or lbRange.start+stop must be set"
+type LBRange struct {
+	// Count is the number of contiguous IPs to reserve from networkKey in
+	// addition to the primary cluster IP. Mutually exclusive with Start/Stop.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Count int `json:"count,omitempty"`
+
+	// Start, Stop pin the range verbatim — typical for kind clusters whose
+	// LoadBalancer IPs come from the docker bridge network rather than the
+	// clusterbook pool. When set, the operator does NOT reserve them from
+	// networkKey, only writes them through to the Secret. Both must be set
+	// together. Mutually exclusive with Count.
+	// +optional
+	Start string `json:"start,omitempty"`
+	// +optional
+	Stop string `json:"stop,omitempty"`
 }
 
 type SecretKeyRef struct {
@@ -101,11 +139,17 @@ type SecretObjectRef struct {
 }
 
 type ClusterbookClusterStatus struct {
-	IP         string             `json:"ip,omitempty"`
-	FQDN       string             `json:"fqdn,omitempty"`
-	Zone       string             `json:"zone,omitempty"`
-	SecretName string             `json:"secretName,omitempty"`
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	IP   string `json:"ip,omitempty"`
+	FQDN string `json:"fqdn,omitempty"`
+	Zone string `json:"zone,omitempty"`
+	// LBRangeStart, LBRangeStop record the resolved LoadBalancer range so
+	// repeat reconciles in operator-allocated mode (spec.lbRange.count > 0)
+	// don't re-reserve the range. In user-pinned mode they mirror
+	// spec.lbRange.start/stop.
+	LBRangeStart string             `json:"lbRangeStart,omitempty"`
+	LBRangeStop  string             `json:"lbRangeStop,omitempty"`
+	SecretName   string             `json:"secretName,omitempty"`
+	Conditions   []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -1,0 +1,68 @@
+---
+# kind cluster registration — clusterType + lbRange (user-pinned).
+#
+# Two things differ from a vSphere/Talos registration:
+#
+#   1. clusterType: "kind" — written to the ArgoCD cluster Secret as
+#      the label clusterbook.stuttgart-things.com/cluster-type. Lets a
+#      platforms/kind/ ApplicationSet generator match only kind clusters
+#      via matchLabels: { clusterbook.stuttgart-things.com/cluster-type:
+#      kind }.
+#
+#   2. lbRange.start/stop pinned verbatim — kind LoadBalancer IPs come
+#      from the docker bridge network, not the clusterbook pool. The
+#      operator writes the range through to annotations
+#      clusterbook.stuttgart-things.com/lb-range-{start,stop} for an
+#      ApplicationSet template to feed into a CiliumLoadBalancerIPPool.
+#
+# Use lbRange.count instead of start/stop when the LB range should be
+# carved out of the clusterbook pool itself (vSphere/Talos with
+# multiple distinct IPs per cluster).
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookCluster
+metadata:
+  name: kind-dev-a
+spec:
+  networkKey: "10.31.103"
+  clusterName: kind-dev-a
+  clusterType: kind
+  createDNS: false
+  preserveKubeconfigServer: true
+  kubeconfigSecretRef:
+    name: kind-dev-a-kubeconfig
+    namespace: argocd
+    key: kubeconfig
+  providerConfigRef:
+    name: default
+  argocdNamespace: argocd
+  lbRange:
+    start: 172.18.255.200
+    stop: 172.18.255.250
+  labels:
+    env: dev
+  releaseOnDelete: true
+---
+# Operator-allocated variant — Cilium LB pool gets a 4-IP block carved
+# out of the same clusterbook pool that holds the primary cluster IP.
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookCluster
+metadata:
+  name: vsphere-prod-a
+spec:
+  networkKey: "10.31.103"
+  clusterName: vsphere-prod-a
+  clusterType: vsphere
+  createDNS: true
+  useFQDNAsServer: true
+  kubeconfigSecretRef:
+    name: vsphere-prod-a-kubeconfig
+    namespace: argocd
+    key: kubeconfig
+  providerConfigRef:
+    name: default
+  argocdNamespace: argocd
+  lbRange:
+    count: 4
+  labels:
+    env: prod
+  releaseOnDelete: false

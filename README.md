@@ -49,6 +49,12 @@ spec:
 
 See [`examples/clusterbookcluster.yaml`](examples/clusterbookcluster.yaml) for a full CR + ApplicationSet pairing, and [`examples/applicationset-cilium-lb-pool.yaml`](examples/applicationset-cilium-lb-pool.yaml) for the Cilium LB pool pattern driven by `ClusterbookAllocation` + the Cluster generator.
 
+### Multi-cluster-type fan-out (kind, vSphere, …)
+
+`ClusterbookCluster` carries an optional `spec.clusterType` discriminator and an optional `spec.lbRange` block (either user-pinned `start`/`stop` or operator-allocated `count`). They surface on the cluster Secret as the label `clusterbook.stuttgart-things.com/cluster-type` and the annotations `…/lb-range-start`, `…/lb-range-stop` — so an ApplicationSet can match a single platform bundle (e.g. `platforms/kind/`) per cluster type and template a Cilium `CiliumLoadBalancerIPPool` from the range.
+
+See [`examples/clusterbookcluster-kind.yaml`](examples/clusterbookcluster-kind.yaml) for kind (user-pinned docker-bridge range) and vSphere (operator-allocated range) variants side by side.
+
 ## Relation to provider-clusterbook
 
 [`provider-clusterbook`](https://github.com/stuttgart-things/xplane-provider-clusterbook) is the Crossplane provider for the same clusterbook API. It is independent: same upstream API, different control plane.
