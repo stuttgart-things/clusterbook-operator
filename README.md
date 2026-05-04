@@ -53,7 +53,7 @@ See [`examples/clusterbookcluster.yaml`](examples/clusterbookcluster.yaml) for a
 
 `ClusterbookCluster` carries an optional `spec.clusterType` discriminator and an optional `spec.lbRange` block (either user-pinned `start`/`stop` or operator-allocated `count`). They surface on the cluster Secret as the label `clusterbook.stuttgart-things.com/cluster-type` and the annotations `…/lb-range-start`, `…/lb-range-stop` — so an ApplicationSet can match a single platform bundle (e.g. `platforms/kind/`) per cluster type and template a Cilium `CiliumLoadBalancerIPPool` from the range.
 
-See [`examples/clusterbookcluster-kind.yaml`](examples/clusterbookcluster-kind.yaml) for kind (user-pinned docker-bridge range) and vSphere (operator-allocated range) variants side by side.
+See [`examples/clusterbookcluster-kind.yaml`](examples/clusterbookcluster-kind.yaml) for kind (user-pinned docker-bridge range) and vSphere (operator-allocated range) variants side by side, and [`docs/tutorial-bootstrap-kind.md`](docs/tutorial-bootstrap-kind.md) for the end-to-end fresh-kind walkthrough — `hack/bootstrap-kind-cluster.sh` wraps the per-cluster steps into one command.
 
 ## Relation to provider-clusterbook
 

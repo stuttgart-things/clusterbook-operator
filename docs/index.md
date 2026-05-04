@@ -109,4 +109,6 @@ The REST client at `pkg/client` was copied (not forked) from `provider-clusterbo
 - [Configuration](configuration.md) — every `spec.*` field on the three CRDs
 - [Compatibility](compatibility.md) — operator ↔ clusterbook server version matrix
 - [Smoke Test](smoke-test.md) — end-to-end validation on a real cluster
+- [Tutorial: Register a new cluster](tutorial-register-new-cluster.md) — vSphere/Talos walkthrough, kubeconfig → ArgoCD Secret with reserved IP/FQDN
+- [Tutorial: Bootstrap a kind cluster](tutorial-bootstrap-kind.md) — fresh kind → clusterType=kind + lbRange → `platforms/kind/` fan-out
 - [Development](development.md) — `make test / generate / build`, envtest, release process
