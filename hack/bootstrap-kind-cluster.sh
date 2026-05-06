@@ -13,17 +13,32 @@
 #
 # Usage:
 #   hack/bootstrap-kind-cluster.sh \
-#     --name dev-a \
+#     --name kind-dev-a \
 #     --mgmt-kubeconfig ~/.kube/platform-sthings \
 #     [--lb-start 172.18.255.200] [--lb-stop 172.18.255.250] \
 #     [--network-key 10.31.103] [--provider-config default] \
 #     [--argocd-namespace argocd] [--release-on-delete true] \
 #     [--dry-run]
 #
+# --name is used as BOTH the kind cluster name AND the ClusterbookCluster
+# name (and spec.clusterName). They must be identical: the cilium-install
+# ApplicationSet templates the in-cluster K8s API hostname as
+# "<clusterName>-control-plane" (the docker container name kind creates),
+# so any divergence breaks Cilium init. The naming convention is to
+# prefix the name with "kind-" (e.g. "kind-dev-a") so the cluster Secret,
+# generated Applications, and AppProject all read as kind-* on the
+# management cluster.
+#
 # Defaults are tuned for the conventional kind-on-kind dev setup
 # (default kind docker subnet 172.18.0.0/16, ArgoCD on the same docker
 # network). Override --lb-start / --lb-stop when running multiple kind
 # clusters on the same docker network — ranges must not overlap.
+#
+# For the remote-kind topology (kind on a separate VM with a routable
+# IP, mgmt cluster on a different docker host), this script is NOT the
+# right tool: it runs `kind create` locally and uses --internal which
+# emits a docker-internal hostname unreachable from the mgmt cluster.
+# Follow docs/tutorial-bootstrap-kind.md Step 3 Variant B by hand.
 
 set -euo pipefail
 
@@ -70,8 +85,8 @@ for cmd in kind kubectl docker; do
   command -v "$cmd" >/dev/null || { echo "ERROR: '$cmd' not on PATH" >&2; exit 1; }
 done
 
-CR_NAME="kind-$NAME"
-SECRET_NAME="kind-${NAME}-kubeconfig"
+CR_NAME="$NAME"
+SECRET_NAME="${NAME}-kubeconfig"
 
 echo "==> bootstrap kind cluster '$NAME'"
 echo "    cr.metadata.name        = $CR_NAME"
