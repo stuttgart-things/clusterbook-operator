@@ -6,7 +6,7 @@ End-to-end walkthrough for taking a freshly-created kind cluster (nothing deploy
 
 - A kind cluster running with **Cilium as the CNI** (installed by Argo, not by kind), **kube-proxy replaced by Cilium**, and a **`CiliumLoadBalancerIPPool`** carved out of the docker bridge.
 - An ArgoCD cluster `Secret` on the management cluster, enriched by [clusterbook-operator](https://github.com/stuttgart-things/clusterbook-operator) with `cluster-type=kind` + `lb-range-{start,stop}`.
-- Six `ApplicationSet`-generated Applications fanning the kind platform bundle onto the new cluster.
+- Four `ApplicationSet`-generated Applications fanning the kind platform bundle onto the new cluster (Cilium install + Cilium LB pool + cert-manager install + cert-manager selfsigned issuer). Two more (`cilium-gateway`, `cert-manager-cluster-ca`) live in an opt-in [`platforms/kind/expose-external`](https://github.com/stuttgart-things/argocd/tree/main/platforms/kind/expose-external) overlay for clusters that publish their kind LB IPs externally via DNS.
 
 ## Prerequisites
 
@@ -151,21 +151,33 @@ If the per-cluster `AppProject` doesn't appear shortly after, your `config/clust
 kubectl apply -k https://github.com/stuttgart-things/argocd.git/platforms/kind?ref=main
 ```
 
-Six ApplicationSets land in `argocd`. As soon as the cluster Secret has `cluster-type=kind`, they fire and generate one Application each per registered kind cluster.
+Four ApplicationSets land in `argocd`. As soon as the cluster Secret has `cluster-type=kind`, they fire and generate one Application each per registered kind cluster.
 
 Watch them converge:
 
 ```bash
 kubectl -n argocd get applications -l app.kubernetes.io/managed-by=argocd | grep dev-a
-# cilium-install-dev-a       Synced  Healthy
-# cert-manager-install-dev-a Synced  Healthy
-# cilium-lb-dev-a            Synced  Healthy
-# cert-manager-selfsigned-...     Synced  Healthy
-# cert-manager-cluster-ca-...     Synced  Healthy
-# cilium-gateway-dev-a       Synced  Healthy
+# cilium-install-dev-a            Synced  Healthy
+# cert-manager-install-dev-a      Synced  Healthy
+# cilium-lb-dev-a                 Synced  Healthy
+# cert-manager-selfsigned-dev-a   Synced  Healthy
 ```
 
 The first one (`cilium-install-dev-a`, sync-wave -10) must land first — without a CNI everything else retries forever, but they will converge automatically once Cilium is up.
+
+> **Optional — Cilium Gateway + cluster-CA.** If you actually publish this kind cluster's LB IPs externally via DNS (uncommon for kind), apply the opt-in overlay too and add the opt-in label to the `ClusterbookCluster` `spec.labels`:
+>
+> ```bash
+> kubectl apply -k https://github.com/stuttgart-things/argocd.git/platforms/kind/expose-external?ref=main
+> ```
+>
+> ```yaml
+> labels:
+>   auto-project: "true"
+>   clusterbook.stuttgart-things.com/expose-external: "true"
+> ```
+>
+> Without the label, the overlay's two AppSets won't generate Applications for the cluster — they need a non-empty `clusterbook.stuttgart-things.com/fqdn` annotation, which only clusters with DNS records can provide.
 
 ## Step 6 — Smoke-test the LB pool
 
@@ -200,7 +212,7 @@ The LB IPs are **not** routed beyond that host. From elsewhere (your workstation
 
 3. **In the remote-kind topology, the kubeconfig server URL is what makes or breaks reconcile.** `--internal` is the wrong flag — it produces a docker-internal hostname that the management cluster can't resolve. Use the remote VM's routable IP (Variant B in Step 3) instead. If reconcile fails with a TLS / dial error, the operator pod cannot reach the kind API: check the secret's kubeconfig `server:` URL is reachable from the management cluster (`kubectl --kubeconfig <secret-extract> get nodes` from a mgmt-cluster node).
 
-4. **`cert-manager-cluster-ca-<name>` and `cilium-gateway-<name>` will stay `Unknown / Healthy` until the cluster has an FQDN.** Both helm charts validate non-empty `wildcard.commonName` / `hostname`, which the AppSets template from a per-cluster DNS allocation. kind clusters don't normally get DNS records (set `createDNS: false` or rely on the clusterbook server skipping kind-typed entries), so without DNS these two Applications can't render. The other four (`cilium-install`, `cilium-lb`, `cert-manager-install`, `cert-manager-selfsigned`) are sufficient to bring the kind cluster Ready and serve workloads via the LB pool. To unblock the gateway/cluster-CA flow, register the cluster against a clusterbook server that issues records for kind clusters (so `status.fqdn` is populated and the cluster Secret gets a `cluster-fqdn` annotation).
+4. **The cluster-CA + Cilium Gateway flow needs an FQDN, which kind clusters typically don't have.** The default `platforms/kind` install (Step 5) only ships the four AppSets that work without DNS. The two FQDN-dependent ones live in [`platforms/kind/expose-external`](https://github.com/stuttgart-things/argocd/tree/main/platforms/kind/expose-external) as an opt-in overlay, gated on a `clusterbook.stuttgart-things.com/expose-external: "true"` label. Apply the overlay only on clusters that genuinely publish their LB IPs externally — kind LB IPs are host-local on the docker bridge by default, so external DNS is the exception, not the default. Without the overlay, expect exactly four Applications per kind cluster, all Synced/Healthy.
 
 ## Repeating for additional kind clusters
 
