@@ -665,6 +665,95 @@ func TestReconcileClusterTypeAndPinnedLBRange(t *testing.T) {
 	}
 }
 
+// TestReconcileKindRegistrationOnly — clusterType=kind without networkKey
+// is the registration-only path: no clusterbook server is consulted at
+// all (no ProviderConfig load, no IP reservation, no DNS, no
+// GetClusterInfo). The Secret is still produced with cluster-type=kind,
+// cluster-name annotation, lb-range annotations, and data.server taken
+// straight from the kubeconfig (preserveKubeconfigServer is required by
+// CRD validation in this mode). Status carries no IP / FQDN.
+func TestReconcileKindRegistrationOnly(t *testing.T) {
+	ctx := context.Background()
+	ensureArgoNamespace(ctx, t)
+
+	mustCreate(ctx, t, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "kc-kind-light", Namespace: "argocd"},
+		Data:       map[string][]byte{"kubeconfig": []byte(fakeKubeconfig)},
+	})
+	// Deliberately NO ClusterbookProviderConfig — registration-only must
+	// reconcile without one. If the operator tried to load it we'd get a
+	// NotFound and the reconcile would fail.
+	mustCreate(ctx, t, &argov1.ClusterbookCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "kind-light"},
+		Spec: argov1.ClusterbookClusterSpec{
+			ClusterName:              "kind-light",
+			ClusterType:              "kind",
+			PreserveKubeconfigServer: true,
+			KubeconfigSecretRef:      &argov1.SecretKeyRef{Name: "kc-kind-light", Namespace: "argocd"},
+			ArgoCDNamespace:          "argocd",
+			LBRange: &argov1.LBRange{
+				Start: "172.18.255.200",
+				Stop:  "172.18.255.250",
+			},
+			Labels: map[string]string{
+				"auto-project": "true",
+			},
+		},
+	})
+
+	r := &Reconciler{Client: k8sClient, Scheme: scheme}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "kind-light"}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var sec corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "cluster-kind-light", Namespace: "argocd"}, &sec); err != nil {
+		t.Fatalf("get Secret: %v", err)
+	}
+	if got := sec.Labels["clusterbook.stuttgart-things.com/cluster-type"]; got != "kind" {
+		t.Errorf("cluster-type label = %q, want kind", got)
+	}
+	if got := sec.Labels["auto-project"]; got != "true" {
+		t.Errorf("auto-project label = %q, want true", got)
+	}
+	if got := sec.Annotations["clusterbook.stuttgart-things.com/cluster-name"]; got != "kind-light" {
+		t.Errorf("cluster-name annotation = %q", got)
+	}
+	if got := sec.Annotations["clusterbook.stuttgart-things.com/lb-range-start"]; got != "172.18.255.200" {
+		t.Errorf("lb-range-start = %q", got)
+	}
+	if got := sec.Annotations["clusterbook.stuttgart-things.com/lb-range-stop"]; got != "172.18.255.250" {
+		t.Errorf("lb-range-stop = %q", got)
+	}
+	// No IP allocated → no ip / fqdn annotations.
+	if v, ok := sec.Annotations["clusterbook.stuttgart-things.com/ip"]; ok && v != "" {
+		t.Errorf("ip annotation should be absent, got %q", v)
+	}
+	if _, ok := sec.Annotations["clusterbook.stuttgart-things.com/fqdn"]; ok {
+		t.Errorf("fqdn annotation should be absent in registration-only mode")
+	}
+	if got, want := string(sec.Data["server"]), "https://example.com:6443"; got != want {
+		t.Errorf("server = %q, want %q (kubeconfig pass-through)", got, want)
+	}
+
+	var fresh argov1.ClusterbookCluster
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "kind-light"}, &fresh); err != nil {
+		t.Fatalf("get CR: %v", err)
+	}
+	if fresh.Status.IP != "" {
+		t.Errorf("status.ip = %q, want empty in registration-only mode", fresh.Status.IP)
+	}
+	if fresh.Status.FQDN != "" {
+		t.Errorf("status.fqdn = %q, want empty", fresh.Status.FQDN)
+	}
+	if fresh.Status.SecretName != "cluster-kind-light" {
+		t.Errorf("status.secretName = %q", fresh.Status.SecretName)
+	}
+	if fresh.Status.LBRangeStart != "172.18.255.200" || fresh.Status.LBRangeStop != "172.18.255.250" {
+		t.Errorf("status lb range = %q-%q", fresh.Status.LBRangeStart, fresh.Status.LBRangeStop)
+	}
+}
+
 // TestReconcileEnrichExistingSecret — in enrich mode the operator must
 // merge prefixed labels/annotations onto a pre-existing Secret that it
 // does NOT own, leaving data and non-prefixed metadata untouched.

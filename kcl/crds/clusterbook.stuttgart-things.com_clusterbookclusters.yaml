@@ -145,7 +145,13 @@ spec:
                   rule: '(has(self.count) && self.count > 0 ? 1 : 0) + (has(self.start)
                     && has(self.stop) ? 1 : 0) == 1'
               networkKey:
-                description: NetworkKey is the clusterbook network pool (e.g. "10.31.103").
+                description: |-
+                  NetworkKey is the clusterbook network pool (e.g. "10.31.103") used
+                  for IP/DNS allocation. Optional only when ClusterType is "kind" — a
+                  kind cluster registered without NetworkKey takes the
+                  registration-only path: the operator skips clusterbook server calls
+                  entirely and only writes the ArgoCD cluster Secret + labels +
+                  LBRange annotations. Required for all other cluster types.
                 type: string
               preserveKubeconfigServer:
                 description: |-
@@ -163,7 +169,10 @@ spec:
               providerConfigRef:
                 description: |-
                   ProviderConfigRef points to a ClusterbookProviderConfig with the
-                  clusterbook API URL and TLS options.
+                  clusterbook API URL and TLS options. Required whenever NetworkKey
+                  is set; may be empty (Name="") in the kind registration-only path
+                  (NetworkKey empty + ClusterType "kind"), since no clusterbook API
+                  calls are made then.
                 properties:
                   name:
                     default: ""
@@ -201,14 +210,20 @@ spec:
                 type: boolean
             required:
             - clusterName
-            - networkKey
-            - providerConfigRef
             type: object
             x-kubernetes-validations:
             - message: exactly one of kubeconfigSecretRef or existingSecretRef must
                 be set
               rule: '(has(self.kubeconfigSecretRef) ? 1 : 0) + (has(self.existingSecretRef)
                 ? 1 : 0) == 1'
+            - message: networkKey is required unless clusterType is 'kind' (registration-only)
+              rule: self.clusterType == 'kind' || has(self.networkKey)
+            - message: providerConfigRef.name is required when networkKey is set
+              rule: '!has(self.networkKey) || (has(self.providerConfigRef) && size(self.providerConfigRef.name)
+                > 0)'
+            - message: preserveKubeconfigServer must be true in the kind registration-only
+                path (no IP/FQDN allocated for data.server)
+              rule: has(self.networkKey) || self.preserveKubeconfigServer
           status:
             properties:
               conditions:

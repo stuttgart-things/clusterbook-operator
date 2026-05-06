@@ -1,23 +1,64 @@
 ---
-# kind cluster registration — clusterType + lbRange (user-pinned).
+# kind cluster registration — registration-only path (no clusterbook
+# server interaction).
 #
-# Two things differ from a vSphere/Talos registration:
+# What this variant does:
 #
-#   1. clusterType: "kind" — written to the ArgoCD cluster Secret as
-#      the label clusterbook.stuttgart-things.com/cluster-type. Lets a
-#      platforms/kind/ ApplicationSet generator match only kind clusters
-#      via matchLabels: { clusterbook.stuttgart-things.com/cluster-type:
-#      kind }.
+#   1. clusterType: "kind" + no networkKey + no providerConfigRef name
+#      → registration-only. The operator skips clusterbook server calls
+#      entirely (no IP allocation, no DNS, no GetClusterInfo, no
+#      release-on-delete) and only transforms the kubeconfig into an
+#      ArgoCD cluster Secret with the right labels and lb-range
+#      annotations. Use this for kind dev/test clusters where IP/FQDN
+#      tracking on the clusterbook server isn't needed.
 #
 #   2. lbRange.start/stop pinned verbatim — kind LoadBalancer IPs come
-#      from the docker bridge network, not the clusterbook pool. The
-#      operator writes the range through to annotations
+#      from the docker bridge network. Written through as annotations
 #      clusterbook.stuttgart-things.com/lb-range-{start,stop} for an
-#      ApplicationSet template to feed into a CiliumLoadBalancerIPPool.
+#      ApplicationSet template (e.g. platforms/kind/) to feed into a
+#      CiliumLoadBalancerIPPool.
 #
-# Use lbRange.count instead of start/stop when the LB range should be
-# carved out of the clusterbook pool itself (vSphere/Talos with
-# multiple distinct IPs per cluster).
+#   3. preserveKubeconfigServer: true is REQUIRED in this mode — there
+#      is no allocated IP/FQDN to put in data.server, so the cluster
+#      Secret takes the kubeconfig's current-context server URL
+#      verbatim. CRD validation rejects the CR without it.
+#
+# If you do want central inventory tracking (operator allocates an IP
+# from a clusterbook pool for each kind cluster), use the third variant
+# below — set networkKey + providerConfigRef and the full path runs.
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookCluster
+metadata:
+  name: dev-a
+spec:
+  clusterName: dev-a
+  clusterType: kind
+  preserveKubeconfigServer: true
+  kubeconfigSecretRef:
+    name: dev-a-kubeconfig
+    namespace: argocd
+    key: kubeconfig
+  argocdNamespace: argocd
+  lbRange:
+    start: 172.18.255.200
+    stop: 172.18.255.250
+  labels:
+    auto-project: "true"
+  releaseOnDelete: true
+---
+# kind cluster registration — clusterType + lbRange + networkKey
+# (clusterbook-tracked variant).
+#
+# Same shape as the registration-only variant above, but networkKey +
+# providerConfigRef set: the operator allocates one IP from the
+# clusterbook pool per cluster (and optionally creates DNS) so the
+# cluster shows up in the central fleet inventory. The lbRange.start/
+# stop is still the docker-bridge range (kind LB IPs aren't from the
+# clusterbook pool); only the primary IP comes from the pool.
+#
+# Use this when you want the kind cluster registered with clusterbook
+# alongside the vSphere/Talos clusters for inventory or when DNS records
+# would be useful (createDNS: true).
 apiVersion: clusterbook.stuttgart-things.com/v1alpha1
 kind: ClusterbookCluster
 metadata:

@@ -13,7 +13,7 @@
 #
 # Usage:
 #   hack/bootstrap-kind-cluster.sh \
-#     --name kind-dev-a \
+#     --name dev-a \
 #     --mgmt-kubeconfig ~/.kube/platform-sthings \
 #     [--lb-start 172.18.255.200] [--lb-stop 172.18.255.250] \
 #     [--network-key 10.31.103] [--provider-config default] \
@@ -24,10 +24,14 @@
 # name (and spec.clusterName). They must be identical: the cilium-install
 # ApplicationSet templates the in-cluster K8s API hostname as
 # "<clusterName>-control-plane" (the docker container name kind creates),
-# so any divergence breaks Cilium init. The naming convention is to
-# prefix the name with "kind-" (e.g. "kind-dev-a") so the cluster Secret,
-# generated Applications, and AppProject all read as kind-* on the
-# management cluster.
+# so any divergence breaks Cilium init.
+#
+# Defaults to the registration-only path: no networkKey + no
+# providerConfigRef in the generated CR, so the operator skips
+# clusterbook-server calls entirely (no IP allocation, no DNS, no
+# release). Pass --network-key + --provider-config to run the
+# inventory-tracked path instead — the operator will allocate one IP
+# per cluster from that pool for central fleet inventory.
 #
 # Defaults are tuned for the conventional kind-on-kind dev setup
 # (default kind docker subnet 172.18.0.0/16, ArgoCD on the same docker
@@ -48,8 +52,11 @@ NAME=""
 MGMT_KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
 LB_START="172.18.255.200"
 LB_STOP="172.18.255.250"
-NETWORK_KEY="10.31.103"
-PROVIDER_CONFIG="default"
+# Empty by default — registration-only path. Set both with the matching
+# --network-key + --provider-config flags to opt into the inventory-
+# tracked path (operator allocates an IP from the pool per cluster).
+NETWORK_KEY=""
+PROVIDER_CONFIG=""
 ARGOCD_NS="argocd"
 RELEASE_ON_DELETE="true"
 DRY_RUN="false"
@@ -92,7 +99,7 @@ echo "==> bootstrap kind cluster '$NAME'"
 echo "    cr.metadata.name        = $CR_NAME"
 echo "    kubeconfig secret       = $SECRET_NAME (ns: $ARGOCD_NS)"
 echo "    lbRange                 = $LB_START → $LB_STOP"
-echo "    clusterbook networkKey  = $NETWORK_KEY"
+echo "    clusterbook networkKey  = ${NETWORK_KEY:-<unset; registration-only path>}"
 echo "    mgmt kubeconfig         = $MGMT_KUBECONFIG"
 echo "    dry-run                 = $DRY_RUN"
 echo
@@ -148,8 +155,15 @@ fi
 # ApplicationSet provision the per-cluster AppProject the platforms/kind
 # AppSets reference via project: '{{ .name }}'. Without it every generated
 # Application stalls with "AppProject 'kind-<name>' not found".
+if [[ -n "$NETWORK_KEY" && -z "$PROVIDER_CONFIG" ]] || [[ -z "$NETWORK_KEY" && -n "$PROVIDER_CONFIG" ]]; then
+  echo "ERROR: --network-key and --provider-config must be set together (or both omitted for registration-only)" >&2
+  exit 1
+fi
+
 echo "==> applying ClusterbookCluster '$CR_NAME'"
-CR_YAML=$(cat <<EOF
+if [[ -n "$NETWORK_KEY" ]]; then
+  echo "    mode                    = inventory-tracked (networkKey=$NETWORK_KEY, providerConfigRef=$PROVIDER_CONFIG)"
+  CR_YAML=$(cat <<EOF
 apiVersion: clusterbook.stuttgart-things.com/v1alpha1
 kind: ClusterbookCluster
 metadata:
@@ -174,6 +188,31 @@ spec:
   releaseOnDelete: $RELEASE_ON_DELETE
 EOF
 )
+else
+  echo "    mode                    = registration-only (no clusterbook-server interaction)"
+  CR_YAML=$(cat <<EOF
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookCluster
+metadata:
+  name: $CR_NAME
+spec:
+  clusterName: $CR_NAME
+  clusterType: kind
+  preserveKubeconfigServer: true
+  kubeconfigSecretRef:
+    name: $SECRET_NAME
+    namespace: $ARGOCD_NS
+    key: kubeconfig
+  argocdNamespace: $ARGOCD_NS
+  lbRange:
+    start: "$LB_START"
+    stop:  "$LB_STOP"
+  labels:
+    auto-project: "true"
+  releaseOnDelete: $RELEASE_ON_DELETE
+EOF
+)
+fi
 
 if [[ "$DRY_RUN" == "true" ]]; then
   echo "    [dry-run] would apply:"

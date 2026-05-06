@@ -6,9 +6,18 @@ import (
 )
 
 // +kubebuilder:validation:XValidation:rule="(has(self.kubeconfigSecretRef) ? 1 : 0) + (has(self.existingSecretRef) ? 1 : 0) == 1",message="exactly one of kubeconfigSecretRef or existingSecretRef must be set"
+// +kubebuilder:validation:XValidation:rule="self.clusterType == 'kind' || has(self.networkKey)",message="networkKey is required unless clusterType is 'kind' (registration-only)"
+// +kubebuilder:validation:XValidation:rule="!has(self.networkKey) || (has(self.providerConfigRef) && size(self.providerConfigRef.name) > 0)",message="providerConfigRef.name is required when networkKey is set"
+// +kubebuilder:validation:XValidation:rule="has(self.networkKey) || self.preserveKubeconfigServer",message="preserveKubeconfigServer must be true in the kind registration-only path (no IP/FQDN allocated for data.server)"
 type ClusterbookClusterSpec struct {
-	// NetworkKey is the clusterbook network pool (e.g. "10.31.103").
-	NetworkKey string `json:"networkKey"`
+	// NetworkKey is the clusterbook network pool (e.g. "10.31.103") used
+	// for IP/DNS allocation. Optional only when ClusterType is "kind" — a
+	// kind cluster registered without NetworkKey takes the
+	// registration-only path: the operator skips clusterbook server calls
+	// entirely and only writes the ArgoCD cluster Secret + labels +
+	// LBRange annotations. Required for all other cluster types.
+	// +optional
+	NetworkKey string `json:"networkKey,omitempty"`
 
 	// ClusterName is the cluster identifier registered in clusterbook.
 	// Used as the ArgoCD cluster name and as the IP reservation key.
@@ -65,8 +74,12 @@ type ClusterbookClusterSpec struct {
 	ExistingSecretRef *SecretObjectRef `json:"existingSecretRef,omitempty"`
 
 	// ProviderConfigRef points to a ClusterbookProviderConfig with the
-	// clusterbook API URL and TLS options.
-	ProviderConfigRef corev1.LocalObjectReference `json:"providerConfigRef"`
+	// clusterbook API URL and TLS options. Required whenever NetworkKey
+	// is set; may be empty (Name="") in the kind registration-only path
+	// (NetworkKey empty + ClusterType "kind"), since no clusterbook API
+	// calls are made then.
+	// +optional
+	ProviderConfigRef corev1.LocalObjectReference `json:"providerConfigRef,omitempty"`
 
 	// ArgoCDNamespace is where the generated cluster Secret is written.
 	// Defaults to "argocd". Ignored in enrich mode (the existing Secret's

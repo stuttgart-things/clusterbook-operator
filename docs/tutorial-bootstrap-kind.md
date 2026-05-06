@@ -108,22 +108,21 @@ Sanity check from the management cluster: `kubectl --kubeconfig /tmp/kc-dev-a ge
 
 ## Step 4 — Apply the `ClusterbookCluster`
 
+`clusterType: kind` without `networkKey` is the **registration-only** path: the operator skips clusterbook server calls entirely (no IP allocation, no DNS, no release-on-delete) and only transforms the kubeconfig into an ArgoCD cluster Secret with `cluster-type=kind`, the user-pinned `lb-range-{start,stop}` annotations, and any extra labels. `preserveKubeconfigServer: true` is required (CRD-enforced) because there is no allocated IP/FQDN to put in `data.server` — kind nodes are reached via the kubeconfig's URL.
+
 ```yaml
 apiVersion: clusterbook.stuttgart-things.com/v1alpha1
 kind: ClusterbookCluster
 metadata:
   name: dev-a
 spec:
-  networkKey: "10.31.103"           # any clusterbook pool — only used for the primary IP/FQDN
   clusterName: dev-a
   clusterType: kind                 # → label cluster-type=kind, what platforms/kind selects on
-  preserveKubeconfigServer: true    # data.server stays at dev-a-control-plane:6443
+  preserveKubeconfigServer: true    # required; data.server stays at dev-a-control-plane:6443
   kubeconfigSecretRef:
     name: dev-a-kubeconfig
     namespace: argocd
     key: kubeconfig
-  providerConfigRef:
-    name: default
   argocdNamespace: argocd
   lbRange:
     start: 172.18.255.200
@@ -137,13 +136,17 @@ spec:
 
 ```bash
 kubectl get clusterbookcluster dev-a -o jsonpath='{.status}{"\n"}'
-# {"ip":"10.31.103.X","secretName":"cluster-dev-a","lbRangeStart":"172.18.255.200",...}
+# {"secretName":"cluster-dev-a","lbRangeStart":"172.18.255.200","lbRangeStop":"172.18.255.250",...}
+# Note: status.ip and status.fqdn are empty in registration-only mode.
 
 kubectl -n argocd get secret cluster-dev-a -o jsonpath='{.metadata.labels}{"\n"}{.metadata.annotations}{"\n"}'
-# Expect: cluster-type=kind label, plus cluster-name, ip, lb-range-start, lb-range-stop annotations.
+# Expect: cluster-type=kind label, plus cluster-name, lb-range-start, lb-range-stop annotations.
+# No ip / fqdn annotations — they're only set when the operator allocates from a clusterbook pool.
 ```
 
 If the per-cluster `AppProject` doesn't appear shortly after, your `config/cluster-project` setup isn't picking up the `auto-project=true` label — check its ApplicationSet selector.
+
+> **Inventory-tracked variant.** If you want the kind cluster registered against a clusterbook server for central fleet inventory (an IP allocated from a pool, optionally a DNS record), set `networkKey` + `providerConfigRef.name` and the operator runs the full path. See [`examples/clusterbookcluster-kind.yaml`](../examples/clusterbookcluster-kind.yaml) for both variants side by side.
 
 ## Step 5 — Install the kind platform bundle on the management cluster
 

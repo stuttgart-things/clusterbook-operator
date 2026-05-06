@@ -44,10 +44,38 @@ const (
 // cluster IP plus the optional LoadBalancer range. Carrying both through
 // the reconcile lets upsertArgoSecret/enrichExistingSecret stay agnostic to
 // whether the range was operator-allocated (Count) or user-pinned (Start/Stop).
+//
+// In the registration-only path (kind, no networkKey) IP is empty and only
+// the LB range is populated from spec.lbRange.
 type allocation struct {
 	IP           string
 	LBRangeStart string
 	LBRangeStop  string
+}
+
+// isRegistrationOnly returns true when the CR opts into the kind
+// registration-only path: clusterType "kind" and no networkKey. In that
+// mode the operator never calls the clusterbook server — it just
+// transforms the kubeconfig into an ArgoCD cluster Secret with the
+// right labels and lb-range annotations. ProviderConfigRef and the
+// clusterbook server are not consulted.
+func isRegistrationOnly(cr *argov1.ClusterbookCluster) bool {
+	return cr.Spec.ClusterType == "kind" && cr.Spec.NetworkKey == ""
+}
+
+// registrationOnlyAllocation builds the allocation for a CR taking the
+// registration-only path: no IP, only the user-pinned LB range from
+// spec.lbRange.start/stop. The CRD validation rules ensure that when
+// networkKey is empty the start+stop variant of LBRange is used (count
+// requires server-side allocation), so this helper does not need to
+// branch on Count.
+func registrationOnlyAllocation(cr *argov1.ClusterbookCluster) allocation {
+	a := allocation{}
+	if cr.Spec.LBRange != nil {
+		a.LBRangeStart = cr.Spec.LBRange.Start
+		a.LBRangeStop = cr.Spec.LBRange.Stop
+	}
+	return a
 }
 
 type Reconciler struct {
@@ -70,14 +98,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	pc, err := r.loadProviderConfig(ctx, cr.Spec.ProviderConfigRef.Name)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("load provider config: %w", err)
-	}
-
-	api, err := r.newClusterbookClient(ctx, pc)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("build clusterbook client: %w", err)
+	// Registration-only mode: kind clusters with no networkKey skip every
+	// clusterbook-server interaction (IP allocation, DNS, cluster info,
+	// release-on-delete). The operator's job collapses to "transform the
+	// kubeconfig into an ArgoCD cluster Secret with the right labels +
+	// lb-range annotations." Avoids requiring server reachability, TLS
+	// trust, and a populated network pool for dev/test kind clusters.
+	var (
+		api *cbkclient.Client
+		err error
+	)
+	if !isRegistrationOnly(&cr) {
+		pc, err := r.loadProviderConfig(ctx, cr.Spec.ProviderConfigRef.Name)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("load provider config: %w", err)
+		}
+		api, err = r.newClusterbookClient(ctx, pc)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("build clusterbook client: %w", err)
+		}
 	}
 
 	if !cr.DeletionTimestamp.IsZero() {
@@ -90,17 +129,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 
-	alloc, err := r.ensureReservation(ctx, api, &cr)
-	if err != nil {
-		return ctrl.Result{}, err
+	var (
+		alloc allocation
+		info  *cbkclient.ClusterInfo
+	)
+	if isRegistrationOnly(&cr) {
+		alloc = registrationOnlyAllocation(&cr)
+	} else {
+		alloc, err = r.ensureReservation(ctx, api, &cr)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.reconcileDNSDrift(ctx, api, &cr, alloc.IP); err != nil {
+			return ctrl.Result{}, err
+		}
+		info, _ = api.GetClusterInfo(ctx, cr.Spec.ClusterName)
 	}
 	ip := alloc.IP
-
-	if err := r.reconcileDNSDrift(ctx, api, &cr, ip); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	info, _ := api.GetClusterInfo(ctx, cr.Spec.ClusterName)
 
 	var secretName string
 	if cr.Spec.ExistingSecretRef != nil {
@@ -184,7 +229,11 @@ func (r *Reconciler) finalize(ctx context.Context, cr *argov1.ClusterbookCluster
 		})
 	}
 
-	if cr.Spec.ReleaseOnDelete && cr.Status.IP != "" {
+	// api is nil in the registration-only path (kind, no networkKey) — no
+	// IP was ever reserved, so there's nothing to release. The IP/api
+	// guards are belt-and-braces against a CR that flips clusterType
+	// mid-life.
+	if api != nil && cr.Spec.ReleaseOnDelete && cr.Status.IP != "" {
 		if err := api.ReleaseIPs(ctx, cr.Spec.NetworkKey, cbkclient.ReleaseRequest{IP: cr.Status.IP}); err != nil {
 			return ctrl.Result{}, fmt.Errorf("release IP: %w", err)
 		}
