@@ -725,12 +725,18 @@ func TestReconcileKindRegistrationOnly(t *testing.T) {
 	if got := sec.Annotations["clusterbook.stuttgart-things.com/lb-range-stop"]; got != "172.18.255.250" {
 		t.Errorf("lb-range-stop = %q", got)
 	}
-	// No IP allocated → no ip / fqdn annotations.
-	if v, ok := sec.Annotations["clusterbook.stuttgart-things.com/ip"]; ok && v != "" {
-		t.Errorf("ip annotation should be absent, got %q", v)
+	// No IP allocated → no ip / fqdn annotations and no allocation-ip
+	// label. Empty strings would still show up in JSONPath queries and
+	// trip up ApplicationSet selectors that test on presence rather than
+	// equality.
+	if _, ok := sec.Annotations["clusterbook.stuttgart-things.com/ip"]; ok {
+		t.Errorf("ip annotation should be absent in registration-only mode, got %v", sec.Annotations)
 	}
 	if _, ok := sec.Annotations["clusterbook.stuttgart-things.com/fqdn"]; ok {
 		t.Errorf("fqdn annotation should be absent in registration-only mode")
+	}
+	if _, ok := sec.Labels["clusterbook.stuttgart-things.com/allocation-ip"]; ok {
+		t.Errorf("allocation-ip label should be absent in registration-only mode, got %v", sec.Labels)
 	}
 	if got, want := string(sec.Data["server"]), "https://example.com:6443"; got != want {
 		t.Errorf("server = %q, want %q (kubeconfig pass-through)", got, want)

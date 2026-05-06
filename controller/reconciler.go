@@ -375,8 +375,14 @@ func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.Clusterboo
 	}
 
 	labels := map[string]string{
-		argoSecretTypeLabel:                 argoSecretTypeValue,
-		clusterbookPrefix + "allocation-ip": alloc.IP,
+		argoSecretTypeLabel: argoSecretTypeValue,
+	}
+	// allocation-ip is only meaningful when an IP was actually allocated.
+	// In registration-only mode (alloc.IP=="") we omit it entirely instead
+	// of writing an empty label that ApplicationSet selectors would
+	// stumble over.
+	if alloc.IP != "" {
+		labels[clusterbookPrefix+"allocation-ip"] = alloc.IP
 	}
 	if cr.Spec.ClusterType != "" {
 		labels[labelClusterType] = cr.Spec.ClusterType
@@ -386,8 +392,10 @@ func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.Clusterboo
 	}
 
 	annotations := map[string]string{
-		annotationIP:          alloc.IP,
 		annotationClusterName: cr.Spec.ClusterName,
+	}
+	if alloc.IP != "" {
+		annotations[annotationIP] = alloc.IP
 	}
 	if alloc.LBRangeStart != "" {
 		annotations[annotationLBRangeStart] = alloc.LBRangeStart
@@ -471,8 +479,10 @@ func (r *Reconciler) enrichExistingSecret(ctx context.Context, cr *argov1.Cluste
 	if cr.Spec.ClusterType != "" {
 		secret.Labels[labelClusterType] = cr.Spec.ClusterType
 	}
-	secret.Annotations[annotationIP] = alloc.IP
 	secret.Annotations[annotationClusterName] = cr.Spec.ClusterName
+	if alloc.IP != "" {
+		secret.Annotations[annotationIP] = alloc.IP
+	}
 	if alloc.LBRangeStart != "" {
 		secret.Annotations[annotationLBRangeStart] = alloc.LBRangeStart
 	}
