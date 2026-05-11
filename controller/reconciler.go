@@ -414,6 +414,16 @@ func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.Clusterboo
 			labels[clusterbookPrefix+"allocation-zone"] = info.Zone
 		}
 	}
+	// Merge user-provided annotations from cr.Spec.Annotations. Operator-
+	// managed entries above win on conflict (so a user can't spoof
+	// cluster-name / ip / fqdn / zone / lb-range-*); everything else
+	// flows through verbatim. Lets AppSets pull chart values from
+	// arbitrary annotation keys without operator code changes.
+	for k, v := range cr.Spec.Annotations {
+		if _, ok := annotations[k]; !ok {
+			annotations[k] = v
+		}
+	}
 
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: argoSecretName(cr), Namespace: ns},
@@ -495,6 +505,13 @@ func (r *Reconciler) enrichExistingSecret(ctx context.Context, cr *argov1.Cluste
 		}
 		if info.Zone != "" {
 			secret.Annotations[annotationZone] = info.Zone
+		}
+	}
+	// User-provided annotations (cr.Spec.Annotations). Operator-managed
+	// entries above win on conflict; everything else flows through.
+	for k, v := range cr.Spec.Annotations {
+		if _, ok := secret.Annotations[k]; !ok {
+			secret.Annotations[k] = v
 		}
 	}
 	return false, r.Update(ctx, &secret)

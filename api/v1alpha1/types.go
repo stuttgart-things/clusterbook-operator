@@ -93,6 +93,16 @@ type ClusterbookClusterSpec struct {
 	// +optional
 	Labels map[string]string `json:"labels,omitempty"`
 
+	// Annotations are additional annotations stamped onto the rendered
+	// ArgoCD cluster Secret, merged on top of the operator-managed ones
+	// (cluster-name, ip, fqdn, zone, lb-range-*). Useful for AppSets'
+	// chart values that read via `{{ index .metadata.annotations "…" }}`
+	// — e.g. the cert-manager-vault-pki AppSet reads `vault-server`,
+	// `vault-pki-path`, `vault-token-secret` annotations. Operator-managed
+	// annotations win on conflict.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+
 	// ReleaseOnDelete releases the clusterbook IP when the CR is deleted.
 	// +optional
 	ReleaseOnDelete bool `json:"releaseOnDelete,omitempty"`

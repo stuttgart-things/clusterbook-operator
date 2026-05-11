@@ -242,6 +242,13 @@ func (in *ClusterbookClusterSpec) DeepCopyInto(out *ClusterbookClusterSpec) {
 			(*out)[key] = val
 		}
 	}
+	if in.Annotations != nil {
+		in, out := &in.Annotations, &out.Annotations
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	if in.LBRange != nil {
 		in, out := &in.LBRange, &out.LBRange
 		*out = new(LBRange)
