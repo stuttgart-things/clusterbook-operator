@@ -52,6 +52,18 @@ spec:
             type: object
           spec:
             properties:
+              annotations:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Annotations are additional annotations stamped onto the rendered
+                  ArgoCD cluster Secret, merged on top of the operator-managed ones
+                  (cluster-name, ip, fqdn, zone, lb-range-*). Useful for AppSets'
+                  chart values that read via `{{ index .metadata.annotations "…" }}`
+                  — e.g. the cert-manager-vault-pki AppSet reads `vault-server`,
+                  `vault-pki-path`, `vault-token-secret` annotations. Operator-managed
+                  annotations win on conflict.
+                type: object
               argocdNamespace:
                 description: |-
                   ArgoCDNamespace is where the generated cluster Secret is written.
