@@ -53,13 +53,20 @@ type allocation struct {
 	LBRangeStop  string
 }
 
-// isRegistrationOnly returns true when the CR opts into the kind
-// registration-only path: clusterType "kind" and no networkKey. In that
-// mode the operator never calls the clusterbook server — it just
-// transforms the kubeconfig into an ArgoCD cluster Secret with the
-// right labels and lb-range annotations. ProviderConfigRef and the
-// clusterbook server are not consulted.
+// isRegistrationOnly returns true when the CR skips every clusterbook
+// server interaction (IP allocation, DNS creation, GetClusterInfo,
+// release-on-delete). In that mode the operator just transforms the
+// kubeconfig into an ArgoCD cluster Secret with the right labels and
+// lb-range annotations. Two ways to opt in:
+//
+//   - SkipReservation=true (explicit; used by parent controllers like
+//     Vcluster that have already reserved themselves)
+//   - ClusterType="kind" with no NetworkKey (implicit, predates the
+//     SkipReservation field — kept for backward compatibility)
 func isRegistrationOnly(cr *argov1.ClusterbookCluster) bool {
+	if cr.Spec.SkipReservation {
+		return true
+	}
 	return cr.Spec.ClusterType == "kind" && cr.Spec.NetworkKey == ""
 }
 
