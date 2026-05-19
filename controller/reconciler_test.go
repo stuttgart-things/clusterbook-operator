@@ -760,6 +760,76 @@ func TestReconcileKindRegistrationOnly(t *testing.T) {
 	}
 }
 
+// TestReconcileSkipReservation — skipReservation=true puts a non-kind
+// CR onto the registration-only path: no clusterbook server is consulted
+// (no ProviderConfig load, no IP reservation, no DNS, no GetClusterInfo)
+// and data.server is taken verbatim from the kubeconfig. This is the path
+// the Vcluster reconciler (#87) will use for the child ClusterbookCluster
+// it emits — the parent has already reserved and rewritten the kubeconfig,
+// so the child must not reserve again.
+func TestReconcileSkipReservation(t *testing.T) {
+	ctx := context.Background()
+	ensureArgoNamespace(ctx, t)
+
+	mustCreate(ctx, t, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "kc-skip-resv", Namespace: "argocd"},
+		Data:       map[string][]byte{"kubeconfig": []byte(fakeKubeconfig)},
+	})
+	// Deliberately NO ClusterbookProviderConfig — skipReservation must
+	// reconcile without one. If the operator tried to load it we'd get a
+	// NotFound and the reconcile would fail.
+	mustCreate(ctx, t, &argov1.ClusterbookCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "vc-child"},
+		Spec: argov1.ClusterbookClusterSpec{
+			ClusterName:              "vc-child",
+			ClusterType:              "vcluster",
+			SkipReservation:          true,
+			PreserveKubeconfigServer: true,
+			KubeconfigSecretRef:      &argov1.SecretKeyRef{Name: "kc-skip-resv", Namespace: "argocd"},
+			ArgoCDNamespace:          "argocd",
+			Labels: map[string]string{
+				"managed-by-vcluster": "pr-1234",
+			},
+		},
+	})
+
+	r := &Reconciler{Client: k8sClient, Scheme: scheme}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "vc-child"}}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var sec corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "cluster-vc-child", Namespace: "argocd"}, &sec); err != nil {
+		t.Fatalf("get Secret: %v", err)
+	}
+	if got := sec.Labels["clusterbook.stuttgart-things.com/cluster-type"]; got != "vcluster" {
+		t.Errorf("cluster-type label = %q, want vcluster", got)
+	}
+	if got := sec.Labels["managed-by-vcluster"]; got != "pr-1234" {
+		t.Errorf("managed-by-vcluster label = %q, want pr-1234", got)
+	}
+	if got, want := string(sec.Data["server"]), "https://example.com:6443"; got != want {
+		t.Errorf("server = %q, want %q (kubeconfig pass-through)", got, want)
+	}
+	if _, ok := sec.Annotations["clusterbook.stuttgart-things.com/ip"]; ok {
+		t.Errorf("ip annotation should be absent in skipReservation mode")
+	}
+	if _, ok := sec.Annotations["clusterbook.stuttgart-things.com/fqdn"]; ok {
+		t.Errorf("fqdn annotation should be absent in skipReservation mode")
+	}
+
+	var fresh argov1.ClusterbookCluster
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "vc-child"}, &fresh); err != nil {
+		t.Fatalf("get CR: %v", err)
+	}
+	if fresh.Status.IP != "" {
+		t.Errorf("status.ip = %q, want empty in skipReservation mode", fresh.Status.IP)
+	}
+	if fresh.Status.SecretName != "cluster-vc-child" {
+		t.Errorf("status.secretName = %q", fresh.Status.SecretName)
+	}
+}
+
 // TestReconcileEnrichExistingSecret — in enrich mode the operator must
 // merge prefixed labels/annotations onto a pre-existing Secret that it
 // does NOT own, leaving data and non-prefixed metadata untouched.

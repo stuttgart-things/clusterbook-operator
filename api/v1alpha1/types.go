@@ -6,9 +6,9 @@ import (
 )
 
 // +kubebuilder:validation:XValidation:rule="(has(self.kubeconfigSecretRef) ? 1 : 0) + (has(self.existingSecretRef) ? 1 : 0) == 1",message="exactly one of kubeconfigSecretRef or existingSecretRef must be set"
-// +kubebuilder:validation:XValidation:rule="self.clusterType == 'kind' || has(self.networkKey)",message="networkKey is required unless clusterType is 'kind' (registration-only)"
+// +kubebuilder:validation:XValidation:rule="self.skipReservation || self.clusterType == 'kind' || has(self.networkKey)",message="networkKey is required unless clusterType is 'kind' or skipReservation is true (registration-only)"
 // +kubebuilder:validation:XValidation:rule="!has(self.networkKey) || (has(self.providerConfigRef) && size(self.providerConfigRef.name) > 0)",message="providerConfigRef.name is required when networkKey is set"
-// +kubebuilder:validation:XValidation:rule="has(self.networkKey) || self.preserveKubeconfigServer",message="preserveKubeconfigServer must be true in the kind registration-only path (no IP/FQDN allocated for data.server)"
+// +kubebuilder:validation:XValidation:rule="has(self.networkKey) || self.preserveKubeconfigServer",message="preserveKubeconfigServer must be true on the registration-only path (no IP/FQDN allocated for data.server)"
 type ClusterbookClusterSpec struct {
 	// NetworkKey is the clusterbook network pool (e.g. "10.31.103") used
 	// for IP/DNS allocation. Optional only when ClusterType is "kind" — a
@@ -18,6 +18,20 @@ type ClusterbookClusterSpec struct {
 	// LBRange annotations. Required for all other cluster types.
 	// +optional
 	NetworkKey string `json:"networkKey,omitempty"`
+
+	// SkipReservation explicitly disables the clusterbook reservation step
+	// for this CR — no IP allocation, no DNS creation, no GetClusterInfo
+	// call, no release-on-delete. Intended for child CRs emitted by a parent
+	// controller (e.g. Vcluster) that has already reserved the IP/FQDN
+	// itself and rewritten the kubeconfig's server URL. When true,
+	// NetworkKey/ProviderConfigRef/CreateDNS/LBRange are not consulted, and
+	// PreserveKubeconfigServer must be true (rule 4) so data.server is taken
+	// from the kubeconfig rather than from an absent reservation. Distinct
+	// from the implicit kind-without-networkKey path, which keys off
+	// ClusterType="kind"; SkipReservation generalises the same behaviour to
+	// any ClusterType.
+	// +optional
+	SkipReservation bool `json:"skipReservation,omitempty"`
 
 	// ClusterName is the cluster identifier registered in clusterbook.
 	// Used as the ArgoCD cluster name and as the IP reservation key.

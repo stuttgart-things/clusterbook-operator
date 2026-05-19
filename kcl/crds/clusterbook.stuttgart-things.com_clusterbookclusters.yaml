@@ -215,6 +215,20 @@ spec:
                   the same wildcard record. Ignored when UseFQDNAsServer is false
                   or the FQDN is not in wildcard form.
                 type: string
+              skipReservation:
+                description: |-
+                  SkipReservation explicitly disables the clusterbook reservation step
+                  for this CR — no IP allocation, no DNS creation, no GetClusterInfo
+                  call, no release-on-delete. Intended for child CRs emitted by a parent
+                  controller (e.g. Vcluster) that has already reserved the IP/FQDN
+                  itself and rewritten the kubeconfig's server URL. When true,
+                  NetworkKey/ProviderConfigRef/CreateDNS/LBRange are not consulted, and
+                  PreserveKubeconfigServer must be true (rule 4) so data.server is taken
+                  from the kubeconfig rather than from an absent reservation. Distinct
+                  from the implicit kind-without-networkKey path, which keys off
+                  ClusterType="kind"; SkipReservation generalises the same behaviour to
+                  any ClusterType.
+                type: boolean
               useFQDNAsServer:
                 description: |-
                   UseFQDNAsServer builds the ArgoCD server URL from the FQDN instead
@@ -228,12 +242,13 @@ spec:
                 be set
               rule: '(has(self.kubeconfigSecretRef) ? 1 : 0) + (has(self.existingSecretRef)
                 ? 1 : 0) == 1'
-            - message: networkKey is required unless clusterType is 'kind' (registration-only)
-              rule: self.clusterType == 'kind' || has(self.networkKey)
+            - message: networkKey is required unless clusterType is 'kind' or skipReservation
+                is true (registration-only)
+              rule: self.skipReservation || self.clusterType == 'kind' || has(self.networkKey)
             - message: providerConfigRef.name is required when networkKey is set
               rule: '!has(self.networkKey) || (has(self.providerConfigRef) && size(self.providerConfigRef.name)
                 > 0)'
-            - message: preserveKubeconfigServer must be true in the kind registration-only
+            - message: preserveKubeconfigServer must be true on the registration-only
                 path (no IP/FQDN allocated for data.server)
               rule: has(self.networkKey) || self.preserveKubeconfigServer
           status:
