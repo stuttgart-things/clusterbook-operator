@@ -109,11 +109,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		err error
 	)
 	if !isRegistrationOnly(&cr) {
-		pc, err := r.loadProviderConfig(ctx, cr.Spec.ProviderConfigRef.Name)
+		pc, err := loadProviderConfig(ctx, r.Client, cr.Spec.ProviderConfigRef.Name)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("load provider config: %w", err)
 		}
-		api, err = r.newClusterbookClient(ctx, pc)
+		api, err = newClusterbookClient(ctx, r.Client, pc)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("build clusterbook client: %w", err)
 		}
@@ -241,30 +241,6 @@ func (r *Reconciler) finalize(ctx context.Context, cr *argov1.ClusterbookCluster
 
 	controllerutil.RemoveFinalizer(cr, finalizer)
 	return ctrl.Result{}, r.Update(ctx, cr)
-}
-
-func (r *Reconciler) loadProviderConfig(ctx context.Context, name string) (*argov1.ClusterbookProviderConfig, error) {
-	var pc argov1.ClusterbookProviderConfig
-	if err := r.Get(ctx, types.NamespacedName{Name: name}, &pc); err != nil {
-		return nil, err
-	}
-	return &pc, nil
-}
-
-func (r *Reconciler) newClusterbookClient(ctx context.Context, pc *argov1.ClusterbookProviderConfig) (*cbkclient.Client, error) {
-	opts := &cbkclient.TLSOptions{InsecureSkipVerify: pc.Spec.InsecureSkipVerify}
-	if ref := pc.Spec.CustomCASecretRef; ref != nil {
-		var s corev1.Secret
-		if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}, &s); err != nil {
-			return nil, err
-		}
-		key := ref.Key
-		if key == "" {
-			key = "ca.crt"
-		}
-		opts.CustomCA = string(s.Data[key])
-	}
-	return cbkclient.NewClient(pc.Spec.APIURL, opts)
 }
 
 func (r *Reconciler) loadKubeconfig(ctx context.Context, ref argov1.SecretKeyRef) ([]byte, error) {

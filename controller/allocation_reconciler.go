@@ -47,11 +47,11 @@ func (r *AllocationReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	pc, err := r.loadProviderConfig(ctx, cr.Spec.ProviderConfigRef.Name)
+	pc, err := loadProviderConfig(ctx, r.Client, cr.Spec.ProviderConfigRef.Name)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("load provider config: %w", err)
 	}
-	api, err := r.newClusterbookClient(ctx, pc)
+	api, err := newClusterbookClient(ctx, r.Client, pc)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("build clusterbook client: %w", err)
 	}
@@ -304,26 +304,3 @@ func (r *AllocationReconciler) reconcileDNSDrift(ctx context.Context, api *cbkcl
 	return nil
 }
 
-func (r *AllocationReconciler) loadProviderConfig(ctx context.Context, name string) (*argov1.ClusterbookProviderConfig, error) {
-	var pc argov1.ClusterbookProviderConfig
-	if err := r.Get(ctx, types.NamespacedName{Name: name}, &pc); err != nil {
-		return nil, err
-	}
-	return &pc, nil
-}
-
-func (r *AllocationReconciler) newClusterbookClient(ctx context.Context, pc *argov1.ClusterbookProviderConfig) (*cbkclient.Client, error) {
-	opts := &cbkclient.TLSOptions{InsecureSkipVerify: pc.Spec.InsecureSkipVerify}
-	if ref := pc.Spec.CustomCASecretRef; ref != nil {
-		var s corev1.Secret
-		if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}, &s); err != nil {
-			return nil, err
-		}
-		key := ref.Key
-		if key == "" {
-			key = "ca.crt"
-		}
-		opts.CustomCA = string(s.Data[key])
-	}
-	return cbkclient.NewClient(pc.Spec.APIURL, opts)
-}
