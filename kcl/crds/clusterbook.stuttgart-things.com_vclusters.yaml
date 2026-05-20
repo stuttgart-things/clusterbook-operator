@@ -1,0 +1,267 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: vclusters.clusterbook.stuttgart-things.com
+spec:
+  group: clusterbook.stuttgart-things.com
+  names:
+    kind: Vcluster
+    listKind: VclusterList
+    plural: vclusters
+    shortNames:
+    - vc
+    singular: vcluster
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.clusterName
+      name: Cluster
+      type: string
+    - jsonPath: .spec.targetNamespace
+      name: Target
+      type: string
+    - jsonPath: .status.ip
+      name: IP
+      type: string
+    - jsonPath: .status.fqdn
+      name: FQDN
+      type: string
+    - jsonPath: .status.argoCDApplicationRef
+      name: App
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              argoCD:
+                description: |-
+                  ArgoCD controls registration of the provisioned vcluster as an
+                  ArgoCD cluster on the management cluster.
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Annotations propagated onto the emitted child ClusterbookCluster's
+                      spec.annotations — stamped onto the rendered ArgoCD cluster Secret.
+                    type: object
+                  labels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Labels propagated onto the emitted child ClusterbookCluster's
+                      spec.labels — applied to the rendered ArgoCD cluster Secret under
+                      the clusterbook.stuttgart-things.com/ prefix.
+                    type: object
+                  namespace:
+                    description: |-
+                      Namespace is where the child ClusterbookCluster's rendered cluster
+                      Secret is written. Defaults to "argocd".
+                    type: string
+                  register:
+                    description: |-
+                      Register controls whether the operator emits a child
+                      ClusterbookCluster at all. Defaults to true; set to false for
+                      provision-only flows (e.g. testing the chart upsert path without
+                      touching ArgoCD). Tri-state pointer so the default is observable.
+                    type: boolean
+                type: object
+              chartValues:
+                description: |-
+                  ChartValues is a verbatim passthrough merged on top of the
+                  operator's defaults (service.type, loadBalancerIP, syncer extraArgs).
+                  Operator-managed keys win on conflict.
+                x-kubernetes-preserve-unknown-fields: true
+              chartVersion:
+                description: ChartVersion pins the loft-sh vcluster Helm chart version.
+                type: string
+              clusterName:
+                description: |-
+                  ClusterName is the name under which the provisioned vcluster is
+                  registered in ArgoCD. Used as the IP reservation key when NetworkKey
+                  is set, and propagated to the emitted child ClusterbookCluster.
+                type: string
+              networkKey:
+                description: |-
+                  NetworkKey is the clusterbook network pool (e.g. "10.31.101") used
+                  for IP/DNS allocation. Omit to skip the clusterbook reservation step
+                  entirely — the operator then provisions the vcluster without
+                  reserving an IP and the emitted child ClusterbookCluster runs in
+                  registration-only mode (skipReservation=true).
+                type: string
+              providerConfigRef:
+                description: |-
+                  ProviderConfigRef points to a ClusterbookProviderConfig with the
+                  clusterbook API URL and TLS options. Required whenever NetworkKey
+                  is set.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              releaseOnDelete:
+                description: ReleaseOnDelete releases the clusterbook IP when the
+                  CR is deleted.
+                type: boolean
+              serverPort:
+                description: |-
+                  ServerPort is the port appended to the external server URL when
+                  rewriting the kubeconfig. Defaults to 443.
+                type: integer
+              targetClusterRef:
+                description: |-
+                  TargetClusterRef points at an existing ArgoCD cluster Secret on the
+                  management cluster. The operator reads that Secret to obtain a
+                  kubeconfig for the host cluster on which the vcluster is installed.
+                  Omit to install on the operator's own cluster (in-cluster config).
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              targetNamespace:
+                description: |-
+                  TargetNamespace is the namespace on the target cluster into which
+                  the vcluster Helm release is deployed. Required.
+                type: string
+            required:
+            - clusterName
+            - targetNamespace
+            type: object
+            x-kubernetes-validations:
+            - message: providerConfigRef.name is required when networkKey is set
+              rule: '!has(self.networkKey) || (has(self.providerConfigRef) && size(self.providerConfigRef.name)
+                > 0)'
+          status:
+            properties:
+              argoCDApplicationRef:
+                description: |-
+                  ArgoCDApplicationRef is the name of the ArgoCD Application the
+                  operator upserts to drive the vcluster Helm install on the target
+                  cluster.
+                type: string
+              clusterbookClusterRef:
+                description: |-
+                  ClusterbookClusterRef is the name of the child ClusterbookCluster
+                  the operator emits to register the provisioned vcluster in ArgoCD.
+                type: string
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              fqdn:
+                description: FQDN is the FQDN returned by clusterbook (only when NetworkKey
+                  is set).
+                type: string
+              ip:
+                description: IP is the IP reserved in clusterbook (only when NetworkKey
+                  is set).
+                type: string
+              kubeconfigSecretRef:
+                description: |-
+                  KubeconfigSecretRef points at the Secret on the management cluster
+                  holding the rewritten external kubeconfig (data key "kubeconfig"),
+                  consumed by the emitted child ClusterbookCluster.
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              zone:
+                description: Zone is the DNS zone returned by clusterbook.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

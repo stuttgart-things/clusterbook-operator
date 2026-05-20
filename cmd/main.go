@@ -52,6 +52,10 @@ func main() {
 		ctrl.Log.Error(err, "setup ClusterbookAllocation reconciler")
 		os.Exit(1)
 	}
+	if err := (&controller.VclusterReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "setup Vcluster reconciler")
+		os.Exit(1)
+	}
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		ctrl.Log.Error(err, "set up healthz")
 		os.Exit(1)
