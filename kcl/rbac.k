@@ -25,7 +25,10 @@ clusterRole = {
         {
             apiGroups: ["clusterbook.stuttgart-things.com"]
             resources: ["clusterbookclusters"]
-            verbs: ["get", "list", "watch", "update", "patch"]
+            # create + delete needed because VclusterReconciler upserts a
+            # child ClusterbookCluster (step 6 of its reconcile flow) and
+            # tears it down on parent delete.
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
         }
         {
             apiGroups: ["clusterbook.stuttgart-things.com"]
@@ -71,6 +74,29 @@ clusterRole = {
             apiGroups: ["clusterbook.stuttgart-things.com"]
             resources: ["clusterbookallocations/finalizers"]
             verbs: ["update"]
+        }
+        {
+            apiGroups: ["clusterbook.stuttgart-things.com"]
+            resources: ["vclusters"]
+            verbs: ["get", "list", "watch", "update", "patch"]
+        }
+        {
+            apiGroups: ["clusterbook.stuttgart-things.com"]
+            resources: ["vclusters/status"]
+            verbs: ["get", "update", "patch"]
+        }
+        {
+            apiGroups: ["clusterbook.stuttgart-things.com"]
+            resources: ["vclusters/finalizers"]
+            verbs: ["update"]
+        }
+        {
+            # VclusterReconciler upserts an ArgoCD Application CR to drive
+            # the loft-sh vcluster Helm install on the target cluster. Treated
+            # as unstructured — no argoproj.io client deps.
+            apiGroups: ["argoproj.io"]
+            resources: ["applications"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
         }
         {
             apiGroups: [""]

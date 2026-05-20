@@ -1,0 +1,77 @@
+---
+# A ClusterbookProviderConfig is only consulted when a Vcluster CR sets
+# spec.networkKey. The in-cluster minimal example below doesn't need it.
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookProviderConfig
+metadata:
+  name: default
+spec:
+  apiURL: https://clusterbook.example.com
+  insecureSkipVerify: false
+---
+# Variant 1 — in-cluster minimal.
+#
+# Provisions a vcluster on the management cluster itself (the operator
+# emits an ArgoCD Application targeting https://kubernetes.default.svc).
+# No IP reservation; the rewritten kubeconfig points at the in-cluster
+# service DNS name `pr-1234.vcluster-pr-1234`, which the default vcluster
+# server cert SANs cover. Disposable PR-preview shape.
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: Vcluster
+metadata:
+  name: pr-1234
+spec:
+  clusterName: pr-1234
+  targetNamespace: vcluster-pr-1234
+---
+# Variant 2 — cross-cluster with clusterbook reservation.
+#
+# Installs the vcluster on a remote host cluster ArgoCD already knows
+# about (targetClusterRef → the host cluster's ArgoCD Secret). The
+# operator reserves an IP + FQDN from clusterbook, injects them into the
+# Helm chart values (controlPlane.service.spec.loadBalancerIP +
+# controlPlane.proxy.extraSANs), and rewrites the kubeconfig server URL
+# to https://<fqdn>:6443.
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: Vcluster
+metadata:
+  name: dev-sandbox
+spec:
+  clusterName: dev-sandbox
+  targetClusterRef:
+    name: dev-host-cluster
+    namespace: argocd
+  targetNamespace: vcluster-dev-sandbox
+  chartVersion: "0.33.1"
+  networkKey: "10.31.101"
+  serverPort: 6443
+  providerConfigRef:
+    name: default
+  argoCD:
+    namespace: argocd
+    labels:
+      env: dev
+      cicd-platform: "true"
+  releaseOnDelete: true
+---
+# Variant 3 — provision-only.
+#
+# Spins up a vcluster but does NOT register it in ArgoCD. Useful for
+# integration test rigs that talk to the vcluster directly (via
+# status.kubeconfigSecretRef) rather than through an ApplicationSet.
+# Also handy when testing chart upgrades — no ArgoCD cluster Secret
+# churn each reconcile.
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: Vcluster
+metadata:
+  name: integration-rig
+spec:
+  clusterName: integration-rig
+  targetNamespace: vcluster-integration-rig
+  chartValues:
+    sync:
+      toHost:
+        ingresses:
+          enabled: true
+  argoCD:
+    register: false
