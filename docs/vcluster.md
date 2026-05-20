@@ -101,6 +101,75 @@ spec:
 | `KubeconfigReady` | The rewritten external Secret `vc-<name>-external` has been written on the management cluster. |
 | `ArgoCDRegistered` | The child `ClusterbookCluster` has been emitted (absent entirely when `argoCD.register: false`). |
 
+## Connecting to the vcluster
+
+Three paths, depending on where you're calling from and what's installed. Examples below use a vcluster named `maverick` in `targetNamespace: maverick-vcluster`.
+
+### 1. `vcluster connect` — loft CLI (cleanest from a workstation)
+
+The loft `vcluster` CLI does the port-forward and kubeconfig assembly in one shot.
+
+```bash
+# install once
+curl -L -o vcluster https://github.com/loft-sh/vcluster/releases/latest/download/vcluster-linux-amd64 \
+  && chmod +x vcluster && sudo mv vcluster /usr/local/bin/
+
+# connect — port-forwards in the foreground, writes a kubeconfig
+KUBECONFIG=~/.kube/host-cluster vcluster connect maverick \
+  -n maverick-vcluster \
+  --kube-config ~/.kube/maverick \
+  --update-current=false
+
+# in another shell
+KUBECONFIG=~/.kube/maverick kubectl get ns
+```
+
+`--update-current=false` keeps the merge out of your main kubeconfig. Ctrl-C tears down the port-forward.
+
+### 2. `kubectl port-forward` + the chart's Secret (no extra tools)
+
+The loft-sh chart writes a kubeconfig under the `config` key of `vc-<name>` on the target cluster; its `server:` field is already `https://localhost:8443`, so you only need the forward.
+
+```bash
+export KUBECONFIG=~/.kube/host-cluster
+
+# grab the chart-written kubeconfig
+kubectl -n maverick-vcluster get secret vc-maverick \
+  -o jsonpath='{.data.config}' | base64 -d > ~/.kube/maverick
+
+# port-forward (foreground; add & to background)
+kubectl -n maverick-vcluster port-forward svc/maverick 8443:443
+
+# use it
+KUBECONFIG=~/.kube/maverick kubectl get ns
+```
+
+### 3. Operator-produced Secret — for in-cluster consumers
+
+The operator publishes a rewritten kubeconfig as `argocd/vc-<name>-external` on the management cluster. The `server:` URL depends on the variant:
+
+- **No `networkKey`** (in-cluster minimal) — server is `https://<clusterName>.<targetNamespace>`. Only resolvable from inside the management cluster (in-cluster service DNS). Mount the Secret into a Pod/Job and it Just Works.
+- **`networkKey` set** (reservation path) — server is `https://<reservedFQDN>:<serverPort>`. Externally reachable wherever DNS resolves the FQDN; the operator's chart-values overlay (`controlPlane.proxy.extraSANs`) makes sure TLS validates.
+
+Pod-side wiring:
+
+```yaml
+spec:
+  containers:
+    - name: workload
+      env:
+        - name: KUBECONFIG
+          value: /kc/kubeconfig
+      volumeMounts:
+        - { name: kc, mountPath: /kc, readOnly: true }
+  volumes:
+    - name: kc
+      secret:
+        secretName: vc-maverick-external
+```
+
+This is the same Secret the emitted child `ClusterbookCluster` reads — and what ArgoCD itself uses indirectly through the materialised `cluster-<name>` registration. For ArgoCD destinations you don't need to touch a kubeconfig at all; just reference `destination.name: maverick` on an Application or ApplicationSet.
+
 ## Gotchas
 
 ### Storage class
