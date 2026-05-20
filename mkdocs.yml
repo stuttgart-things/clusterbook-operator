@@ -7,6 +7,7 @@ nav:
   - Cluster registration: usage.md
   - LoadBalancer: loadbalancer.md
   - Allocation: allocation.md
+  - Vcluster: vcluster.md
   - Configuration: configuration.md
   - Compatibility: compatibility.md
   - Smoke Test: smoke-test.md

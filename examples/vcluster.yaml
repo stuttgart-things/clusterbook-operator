@@ -16,6 +16,12 @@ spec:
 # No IP reservation; the rewritten kubeconfig points at the in-cluster
 # service DNS name `pr-1234.vcluster-pr-1234`, which the default vcluster
 # server cert SANs cover. Disposable PR-preview shape.
+#
+# chartValues pins the StatefulSet PVC's storageClass — the loft-sh chart
+# defaults to leaving it unset, which only works on clusters with a
+# default StorageClass. Set this to a real class on your cluster (e.g.
+# `openebs-hostpath`, `standard`, `gp3`) or remove the block if a default
+# exists.
 apiVersion: clusterbook.stuttgart-things.com/v1alpha1
 kind: Vcluster
 metadata:
@@ -23,6 +29,14 @@ metadata:
 spec:
   clusterName: pr-1234
   targetNamespace: vcluster-pr-1234
+  chartValues:
+    controlPlane:
+      statefulSet:
+        persistence:
+          volumeClaim:
+            enabled: true
+            size: 5Gi
+            storageClass: openebs-hostpath
 ---
 # Variant 2 — cross-cluster with clusterbook reservation.
 #

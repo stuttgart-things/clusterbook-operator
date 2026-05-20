@@ -2,17 +2,18 @@
 
 A Kubernetes operator for [clusterbook](https://github.com/stuttgart-things/clusterbook) — reserves IPs (and optional PowerDNS records) and materialises them as the Kubernetes objects that actually consume them.
 
-## Three CRDs at a glance
+## Four CRDs at a glance
 
 | CRD | Use case | Output |
 |---|---|---|
 | **`ClusterbookCluster`** | Register a Kubernetes cluster in ArgoCD with a clusterbook-backed IP/FQDN | `Secret` with `argocd.argoproj.io/secret-type=cluster` — or **enrich mode** decorates an externally-managed Secret |
 | **`ClusterbookLoadBalancer`** | Give a Cilium LoadBalancer Service a stable IP (+ optional DNS) | `CiliumLoadBalancerIPPool` — or `serviceRef` mode patches `.spec.loadBalancerIP` on an existing Service |
 | **`ClusterbookAllocation`** | Pure "reserve and publish" — no Service attachment, no kubeconfig | `ConfigMap` with `ip`/`fqdn`/`zone` keys — and/or prefixed labels on an existing ArgoCD cluster Secret |
+| **`Vcluster`** | Provision a loft-sh vcluster *and* auto-register it in ArgoCD (PR-preview / sandbox shape) | ArgoCD `Application` driving the chart **+** emitted child `ClusterbookCluster` → `cluster-<name>` Secret |
 
-All three share `ClusterbookProviderConfig` for the clusterbook API endpoint + TLS options and annotate their output with `clusterbook.stuttgart-things.com/ip` / `/fqdn` / `/zone` for downstream discovery.
+`ClusterbookCluster`, `ClusterbookLoadBalancer`, and `ClusterbookAllocation` share `ClusterbookProviderConfig` for the clusterbook API endpoint + TLS options and annotate their output with `clusterbook.stuttgart-things.com/ip` / `/fqdn` / `/zone` for downstream discovery. `Vcluster` is the only CRD that *composes* the others — it emits a child `ClusterbookCluster` to close the registration loop.
 
-Full docs: [index](docs/index.md) · [install](docs/install.md) · [cluster registration](docs/usage.md) · [loadbalancer](docs/loadbalancer.md) · [allocation](docs/allocation.md) · [compatibility](docs/compatibility.md).
+Full docs: [index](docs/index.md) · [install](docs/install.md) · [cluster registration](docs/usage.md) · [loadbalancer](docs/loadbalancer.md) · [allocation](docs/allocation.md) · [vcluster](docs/vcluster.md) · [compatibility](docs/compatibility.md).
 
 ## Install
 
