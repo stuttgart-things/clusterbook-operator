@@ -2,15 +2,16 @@
 
 A Kubernetes operator for [clusterbook](https://github.com/stuttgart-things/clusterbook) — reserves IPs (and optional PowerDNS records) and turns them into the Kubernetes objects that actually consume them.
 
-Three CRDs, three distinct use cases:
+Four CRDs, four distinct use cases:
 
 | CRD | Use case | Output |
 |---|---|---|
 | **`ClusterbookCluster`** | Register a Kubernetes cluster in ArgoCD with a clusterbook-backed IP/FQDN | `Secret` with `argocd.argoproj.io/secret-type=cluster` (or metadata-only enrich of an existing one) |
 | **`ClusterbookLoadBalancer`** | Give a Cilium LoadBalancer Service a stable IP (+ optional DNS) | `cilium.io/v2alpha1 CiliumLoadBalancerIPPool` (or patch `.spec.loadBalancerIP` on an existing Service) |
 | **`ClusterbookAllocation`** | Pure "reserve and publish" — no Service / Cilium pool / kubeconfig | `ConfigMap` with `ip`/`fqdn`/`zone` keys (and/or prefix-scoped labels on an existing cluster Secret) |
+| **`Vcluster`** | Provision a loft-sh vcluster + auto-register it in ArgoCD (PR-preview / sandbox shape) | `argoproj.io/v1alpha1 Application` driving the upstream Helm chart **+** emitted child `ClusterbookCluster` |
 
-All three share `ClusterbookProviderConfig` for the clusterbook API endpoint + TLS options, all participate in the same clusterbook reservation pool, and all annotate their output with `clusterbook.stuttgart-things.com/ip` / `/fqdn` / `/zone` for downstream discovery.
+The first three share `ClusterbookProviderConfig` for the clusterbook API endpoint + TLS options and annotate their output with `clusterbook.stuttgart-things.com/ip` / `/fqdn` / `/zone` for downstream discovery. `Vcluster` composes them — it emits a child `ClusterbookCluster` with `skipReservation=true` so the parent owns the reservation end-to-end.
 
 ## `ClusterbookLoadBalancer` — Cilium LB IPAM
 
@@ -71,6 +72,22 @@ Use this when you just need a stable IP + DNS published *somewhere consumers can
 
 See [Allocation](allocation.md) for sink contracts and ApplicationSet wiring, plus [`examples/applicationset-cilium-lb-pool.yaml`](https://github.com/stuttgart-things/clusterbook-operator/blob/main/examples/applicationset-cilium-lb-pool.yaml) for an end-to-end Cilium LB pool pattern.
 
+## `Vcluster` — provision and auto-register a vcluster
+
+```
+Vcluster (CR)                  -->   ArgoCD Application (loft-sh chart on host cluster)
+  clusterName                          + Secret  vc-<name>-external   (rewritten kubeconfig)
+  targetClusterRef?                    + ClusterbookCluster  <name>   (skipReservation=true)
+  targetNamespace                        └─> existing reconciler emits cluster-<name> Secret
+  networkKey?                                  (the actual ArgoCD destination registration)
+  chartValues?
+  argoCD.register?
+```
+
+One CR yields a working vcluster *and* an ArgoCD-registered destination — collapses the five-step manual flow (pick host → helm install → `kubectl get secret vc-…` → rewrite server URL → emit ClusterbookCluster) into a single declarative resource. With `networkKey` set the operator reserves an IP + FQDN and injects them as `controlPlane.service.spec.loadBalancerIP` + `controlPlane.proxy.extraSANs` so the rewritten kubeconfig's server URL validates against the vcluster API cert. Without `networkKey` it stays in-cluster (rewritten URL `https://<clusterName>.<namespace>`, SAN-covered).
+
+See [Vcluster](vcluster.md) for the three variants (in-cluster minimal, cross-cluster with reservation, provision-only) and the gotchas the design exposed.
+
 ## Why use this instead of `argocd cluster add`?
 
 `argocd cluster add <context>` is the imperative path: you run a CLI against both kubeconfigs, it creates the cluster Secret, and that's it. You get a Secret with `name`, `server`, and `config`. Nothing more.
@@ -106,7 +123,8 @@ The REST client at `pkg/client` was copied (not forked) from `provider-clusterbo
 - [Cluster registration](usage.md) — `ClusterbookCluster` + ApplicationSet wiring (create mode and enrich mode)
 - [LoadBalancer](loadbalancer.md) — `ClusterbookLoadBalancer` CR, Cilium pool mode, `serviceRef` mode
 - [Allocation](allocation.md) — `ClusterbookAllocation` sinks and ApplicationSet consumption patterns
-- [Configuration](configuration.md) — every `spec.*` field on the three CRDs
+- [Vcluster](vcluster.md) — provision a loft-sh vcluster and auto-register it in ArgoCD, three variants
+- [Configuration](configuration.md) — every `spec.*` field on the four CRDs
 - [Compatibility](compatibility.md) — operator ↔ clusterbook server version matrix
 - [Smoke Test](smoke-test.md) — end-to-end validation on a real cluster
 - [Tutorial: Register a new cluster](tutorial-register-new-cluster.md) — vSphere/Talos walkthrough, kubeconfig → ArgoCD Secret with reserved IP/FQDN
