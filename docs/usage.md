@@ -133,7 +133,41 @@ spec:
 
 Exactly one of `kubeconfigSecretRef` or `existingSecretRef` must be set — the CRD rejects specs with both or neither.
 
-## 6. Multi-cluster-type fan-out (`clusterType` + `lbRange`)
+## 6. Registration-only mode — for externally-built clusters (`skipReservation`)
+
+If the cluster you want to register was provisioned by *something else* (a Crossplane Composition, a Terraform module, a manual `helm install` of vcluster, the operator's own `Vcluster` CRD which uses this same path internally) and already has a usable kubeconfig Secret, you don't need clusterbook reservation at all — just the kubeconfig-to-ArgoCD-Secret transformation plus the labels/annotations machinery. Set:
+
+- **`spec.skipReservation: true`** — no IP allocation, no DNS creation, no `release on delete`. The operator never contacts the clusterbook server.
+- **`spec.preserveKubeconfigServer: true`** — `data.server` on the rendered ArgoCD Secret is taken from the kubeconfig's current-context cluster verbatim (no clusterbook IP to rewrite it with).
+- **`spec.clusterType`** — free-form discriminator; for vclusters use `vcluster` so the resulting Secret carries `clusterbook.stuttgart-things.com/cluster-type=vcluster` for ApplicationSet selection.
+
+`spec.networkKey` and `spec.providerConfigRef` are not consulted (the CRD validation explicitly allows omitting them when `skipReservation: true`). No `ClusterbookProviderConfig` is required for this path.
+
+```yaml
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookCluster
+metadata:
+  name: my-external-vcluster
+spec:
+  clusterName: my-external-vcluster
+  clusterType: vcluster
+  skipReservation: true
+  preserveKubeconfigServer: true
+  kubeconfigSecretRef:
+    name: my-external-vcluster-kubeconfig
+    namespace: argocd
+    key: kubeconfig
+  labels:
+    env: dev
+```
+
+After the first reconcile you get a Secret `cluster-my-external-vcluster` in the ArgoCD namespace with `argocd.argoproj.io/secret-type=cluster`, the `clusterbook.stuttgart-things.com/cluster-type=vcluster` label, all your custom labels propagated, and `data.server` set to whatever the kubeconfig says.
+
+**Source URL caveat** — the kubeconfig in the referenced Secret must have a `server:` field that ArgoCD can actually reach. The loft-sh upstream `vc-<name>` Secret hardcodes `https://localhost:8443`, which only works behind a port-forward; for ArgoCD you'd want to rewrite it first (or have your provisioning tool emit a Secret whose kubeconfig already points at the externally-reachable URL).
+
+This is the same code path the operator's own `Vcluster` reconciler uses internally — it provisions the vcluster, rewrites the kubeconfig's `server:` URL, and emits a child `ClusterbookCluster` with exactly the flags above. See [Vcluster](vcluster.md) for the bundled provisioning + registration variant, or [`examples/clusterbookcluster-external-vcluster.yaml`](https://github.com/stuttgart-things/clusterbook-operator/blob/main/examples/clusterbookcluster-external-vcluster.yaml) for the standalone "kubeconfig already exists" pattern.
+
+## 7. Multi-cluster-type fan-out (`clusterType` + `lbRange`)
 
 When the same Argo control plane registers heterogeneous clusters (kind for dev, vSphere/Talos for prod) and you want a different platform bundle per type, two optional fields on `ClusterbookCluster` carry the routing:
 

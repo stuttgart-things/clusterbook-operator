@@ -1,0 +1,98 @@
+---
+# Register an externally-built cluster (e.g. a vcluster provisioned by
+# Crossplane, Terraform, or `helm install` directly) in ArgoCD via
+# `ClusterbookCluster` — without touching clusterbook.
+#
+# The flag combo:
+#
+#   spec.skipReservation: true           — no clusterbook server interaction
+#                                          (no IP allocation, no DNS, no
+#                                          release on delete)
+#   spec.preserveKubeconfigServer: true  — data.server on the ArgoCD Secret
+#                                          comes from the kubeconfig's
+#                                          current-context cluster verbatim,
+#                                          not from an absent reservation
+#   spec.clusterType: "vcluster"         — surfaces as the label
+#                                          clusterbook.stuttgart-things.com/
+#                                          cluster-type=vcluster for
+#                                          ApplicationSet selection
+#
+# The kubeconfig in the source Secret MUST have a server: URL that ArgoCD
+# can reach. The loft-sh upstream `vc-<name>` Secret hardcodes
+# `https://localhost:8443` — useful for `vcluster connect` port-forwards
+# but not for ArgoCD; you'd need to rewrite it (or use a Secret produced
+# by something that already wrote the externally-reachable URL).
+#
+# No ClusterbookProviderConfig is needed for this pattern — skipReservation
+# short-circuits every clusterbook server call.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-external-vcluster-kubeconfig
+  namespace: argocd
+type: Opaque
+stringData:
+  kubeconfig: |
+    apiVersion: v1
+    kind: Config
+    current-context: my-external-vcluster
+    contexts:
+      - name: my-external-vcluster
+        context: { cluster: my-external-vcluster, user: admin }
+    clusters:
+      - name: my-external-vcluster
+        cluster:
+          server: https://my-external-vcluster.example.com:6443
+          certificate-authority-data: <base64 PEM>
+    users:
+      - name: admin
+        user:
+          client-certificate-data: <base64 PEM>
+          client-key-data:         <base64 PEM>
+---
+apiVersion: clusterbook.stuttgart-things.com/v1alpha1
+kind: ClusterbookCluster
+metadata:
+  name: my-external-vcluster
+spec:
+  clusterName: my-external-vcluster
+  clusterType: vcluster
+  skipReservation: true
+  preserveKubeconfigServer: true
+  kubeconfigSecretRef:
+    name: my-external-vcluster-kubeconfig
+    namespace: argocd
+    key: kubeconfig
+  argocdNamespace: argocd
+  labels:
+    env: dev
+    cicd-platform: "true"
+---
+# Same shape an ApplicationSet would already use against any other
+# clusterbook-managed cluster — the only difference is the cluster-type
+# label selector picks out the vcluster subset.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: vcluster-workloads
+  namespace: argocd
+spec:
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            clusterbook.stuttgart-things.com/cluster-type: vcluster
+  template:
+    metadata:
+      name: "vcluster-workloads-{{name}}"
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/stuttgart-things/workloads
+        path: vcluster/base
+        targetRevision: main
+      destination:
+        name: "{{name}}"
+        namespace: default
+      syncPolicy:
+        automated: {}
