@@ -11,12 +11,29 @@ permissions:
   contents: write
   packages: write
 
+# Release fires on both workflow_run completion and workflow_dispatch, so
+# several runs can otherwise be in flight at once. When they overlap they race
+# on `git push --tags`: the loser dies with "cannot lock ref 'refs/tags/vX':
+# reference already exists" and never reaches its publish steps, leaving a tag
+# and a GitHub release with no image behind them. Observed in the twin of this
+# workflow — stuttgart-things/sops-secrets-operator#86, fixed there in #87.
+#
+# cancel-in-progress is deliberately false: cancelling a run midway is exactly
+# how a release ends up half published. Queue instead.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
-    runs-on: dagger-labul
+    # dagger-labda rather than dagger-labul: the labul runner (`shuffle`) is a
+    # single machine, and while it is offline releases queue behind it with no
+    # failure and no timeout — just a job sitting in `queued` indefinitely.
+    # labda carries two runners, so one being down no longer stalls releases.
+    runs-on: dagger-labda
     environment: k8s
 
     steps:
