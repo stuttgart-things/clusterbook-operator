@@ -2,7 +2,7 @@ module github.com/stuttgart-things/clusterbook-operator
 
 go 1.25.0
 
-toolchain go1.26.3
+toolchain go1.26.5
 
 tool sigs.k8s.io/controller-tools/cmd/controller-gen
 
