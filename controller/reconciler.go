@@ -4,6 +4,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -17,7 +19,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	argov1 "github.com/stuttgart-things/clusterbook-operator/api/v1alpha1"
 	cbkclient "github.com/stuttgart-things/clusterbook-operator/pkg/client"
@@ -30,13 +34,16 @@ const (
 	defaultArgoNamespace = "argocd"
 	defaultPort          = 6443
 
-	clusterbookPrefix        = "clusterbook.stuttgart-things.com/"
-	annotationIP             = clusterbookPrefix + "ip"
-	annotationFQDN           = clusterbookPrefix + "fqdn"
-	annotationZone           = clusterbookPrefix + "zone"
-	annotationClusterName    = clusterbookPrefix + "cluster-name"
-	annotationLBRangeStart   = clusterbookPrefix + "lb-range-start"
-	annotationLBRangeStop    = clusterbookPrefix + "lb-range-stop"
+	clusterbookPrefix      = "clusterbook.stuttgart-things.com/"
+	annotationIP           = clusterbookPrefix + "ip"
+	annotationFQDN         = clusterbookPrefix + "fqdn"
+	annotationZone         = clusterbookPrefix + "zone"
+	annotationClusterName  = clusterbookPrefix + "cluster-name"
+	annotationLBRangeStart = clusterbookPrefix + "lb-range-start"
+	annotationLBRangeStop  = clusterbookPrefix + "lb-range-stop"
+	// annotationKubeconfigHash records which revision of the source
+	// kubeconfig produced the rendered Secret — see kubeconfigHash.
+	annotationKubeconfigHash = clusterbookPrefix + "kubeconfig-hash"
 	labelClusterType         = clusterbookPrefix + "cluster-type"
 )
 
@@ -94,7 +101,72 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&argov1.ClusterbookCluster{}).
 		Owns(&corev1.Secret{}).
+		// Owns() only covers the Secrets the operator itself renders. The
+		// *source* Secret named by spec.kubeconfigSecretRef (and the
+		// foreign Secret named by spec.existingSecretRef) is owned by
+		// somebody else — External Secrets Operator, Crossplane, a human —
+		// so without this watch a change to it never reaches the
+		// reconciler. That was issue #109: a cluster rebuilt under the same
+		// name got a new API server address, ESO refreshed the kubeconfig
+		// Secret, and the rendered ArgoCD cluster Secret kept pointing at
+		// the dead IP until somebody touched the CR by hand.
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.clustersForSecret)).
 		Complete(r)
+}
+
+// clustersForSecret maps a Secret event onto every ClusterbookCluster that
+// references that Secret, in either direction: as the kubeconfig source to
+// render from, or as the foreign Secret to enrich with clusterbook metadata.
+//
+// It lists all ClusterbookClusters rather than resolving through a field
+// index. The list is served from the manager's cache (no API call), the CRs
+// are cluster-scoped and few — tens, not thousands — and an index would need
+// two of them (one per ref field) plus manager wiring that the direct-call
+// unit tests do not have.
+func (r *Reconciler) clustersForSecret(ctx context.Context, obj client.Object) []reconcile.Request {
+	var list argov1.ClusterbookClusterList
+	if err := r.List(ctx, &list); err != nil {
+		log.FromContext(ctx).Error(err, "map Secret event to ClusterbookClusters",
+			"secret", obj.GetNamespace()+"/"+obj.GetName())
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range list.Items {
+		cr := &list.Items[i]
+		if !referencesSecret(cr, obj.GetNamespace(), obj.GetName()) {
+			continue
+		}
+		reqs = append(reqs, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: cr.Name},
+		})
+	}
+	return reqs
+}
+
+// referencesSecret reports whether the CR reads from, or writes metadata
+// onto, the given Secret.
+func referencesSecret(cr *argov1.ClusterbookCluster, namespace, name string) bool {
+	if ref := cr.Spec.KubeconfigSecretRef; ref != nil && ref.Namespace == namespace && ref.Name == name {
+		return true
+	}
+	if ref := cr.Spec.ExistingSecretRef; ref != nil && ref.Namespace == namespace && ref.Name == name {
+		return true
+	}
+	return false
+}
+
+// kubeconfigHash fingerprints the kubeconfig bytes the rendered Secret was
+// built from. Published on both status.kubeconfigHash and the rendered
+// Secret's kubeconfig-hash annotation so a lagging render is visible by
+// looking, instead of having to diff the rendered Secret against its source
+// by hand. Deliberately the plain SHA-256 of the raw bytes, hex-encoded, so
+// it can be reproduced from a shell:
+//
+//	kubectl -n <ns> get secret <name> -o jsonpath='{.data.kubeconfig}' \
+//	  | base64 -d | sha256sum
+func kubeconfigHash(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -154,7 +226,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	ip := alloc.IP
 
-	var secretName string
+	var (
+		secretName string
+		kcHash     string
+	)
 	if cr.Spec.ExistingSecretRef != nil {
 		ref := *cr.Spec.ExistingSecretRef
 		notFound, err := r.enrichExistingSecret(ctx, &cr, alloc, info)
@@ -189,8 +264,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, fmt.Errorf("extract kubeconfig: %w", err)
 		}
 		server := buildServerURL(&cr, ip, kubeconfigServer, info)
+		kcHash = kubeconfigHash(kcfg)
 
-		secret, err := r.upsertArgoSecret(ctx, &cr, alloc, info, server, argoCfg, caData)
+		secret, err := r.upsertArgoSecret(ctx, &cr, alloc, info, server, kcHash, argoCfg, caData)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("upsert argo secret: %w", err)
 		}
@@ -205,6 +281,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	cr.Status.IP = ip
 	cr.Status.SecretName = secretName
+	// Only set on the render path; enrich mode never reads a kubeconfig,
+	// so leaving the previous value would be a lie.
+	cr.Status.KubeconfigHash = kcHash
 	cr.Status.LBRangeStart = alloc.LBRangeStart
 	cr.Status.LBRangeStop = alloc.LBRangeStop
 	if info != nil {
@@ -351,7 +430,7 @@ func argoSecretName(cr *argov1.ClusterbookCluster) string {
 	return "cluster-" + cr.Spec.ClusterName
 }
 
-func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.ClusterbookCluster, alloc allocation, info *cbkclient.ClusterInfo, server string, cfgJSON, _ []byte) (*corev1.Secret, error) {
+func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.ClusterbookCluster, alloc allocation, info *cbkclient.ClusterInfo, server, kcHash string, cfgJSON, _ []byte) (*corev1.Secret, error) {
 	ns := cr.Spec.ArgoCDNamespace
 	if ns == "" {
 		ns = defaultArgoNamespace
@@ -376,6 +455,9 @@ func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.Clusterboo
 
 	annotations := map[string]string{
 		annotationClusterName: cr.Spec.ClusterName,
+	}
+	if kcHash != "" {
+		annotations[annotationKubeconfigHash] = kcHash
 	}
 	if alloc.IP != "" {
 		annotations[annotationIP] = alloc.IP

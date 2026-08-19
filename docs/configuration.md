@@ -39,6 +39,7 @@
 | `lbRangeStart` | First LB IP. Mirrors `spec.lbRange.start` when user-pinned; recorded from the reservation result when operator-allocated |
 | `lbRangeStop` | Last LB IP — see `lbRangeStart` |
 | `secretName` | Name of the ArgoCD cluster Secret (always `cluster-<clusterName>`) |
+| `kubeconfigHash` | `sha256:<hex>` of the kubeconfig that produced the currently rendered Secret. Empty in enrich mode. See [Detecting a stale render](#detecting-a-stale-render) |
 | `conditions[type=Ready]` | `True` after a successful reconcile |
 
 ## Cluster Secret labels and annotations
@@ -56,6 +57,29 @@ The operator writes (and on CR delete strips, in enrich mode) the following keys
 | `cluster-name` | annotation | `spec.clusterName` — always |
 | `lb-range-start` | annotation | resolved LB range start (only when `lbRange` is set) |
 | `lb-range-stop` | annotation | resolved LB range stop (only when `lbRange` is set) |
+| `kubeconfig-hash` | annotation | `sha256:<hex>` of the source kubeconfig — create mode only |
+
+## Detecting a stale render
+
+The operator watches the Secret named by `spec.kubeconfigSecretRef`, so a
+refresh of the source kubeconfig (an External Secrets Operator sync after a
+cluster rebuild, for instance) re-renders the ArgoCD cluster Secret on its
+own — no annotation nudge on the CR needed.
+
+`status.kubeconfigHash` records which revision of the source the current
+render came from. It is the plain SHA-256 of the raw kubeconfig bytes, so
+it can be reproduced from a shell and compared:
+
+```bash
+kubectl -n argocd get secret <kubeconfig-secret> \
+  -o jsonpath='{.data.kubeconfig}' | base64 -d | sha256sum
+
+kubectl get clusterbookcluster <name> -o jsonpath='{.status.kubeconfigHash}'
+```
+
+A mismatch means the render is behind its source. The same value is stamped
+onto the rendered Secret as `clusterbook.stuttgart-things.com/kubeconfig-hash`,
+so the comparison also works without going through the CR.
 
 ## `ClusterbookLoadBalancer` spec
 

@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.20.1
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: clusterbookclusters.clusterbook.stuttgart-things.com
 spec:
   group: clusterbook.stuttgart-things.com
@@ -312,6 +312,21 @@ spec:
               fqdn:
                 type: string
               ip:
+                type: string
+              kubeconfigHash:
+                description: |-
+                  KubeconfigHash is the SHA-256 (hex, "sha256:"-prefixed) of the
+                  kubeconfig bytes that produced the currently rendered ArgoCD cluster
+                  Secret. The same value is stamped onto that Secret as the annotation
+                  clusterbook.stuttgart-things.com/kubeconfig-hash.
+
+                  It exists to make a lagging render visible by looking: hash the
+                  Secret named by spec.kubeconfigSecretRef and compare. A mismatch
+                  means the operator has not yet caught up with its source — the
+                  failure mode from issue #109, where the rendered Secret kept a dead
+                  API server address after a cluster rebuild and nothing in the status
+                  said so. Empty in enrich mode (spec.existingSecretRef), which never
+                  reads a kubeconfig.
                 type: string
               lbRangeStart:
                 description: |-

@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -1005,5 +1006,158 @@ func TestReconcileEnrichDeleteStripsOwnLabels(t *testing.T) {
 	}
 	if got.Annotations["keep-annotation"] != "yes" {
 		t.Errorf("foreign annotation stripped: %v", got.Annotations)
+	}
+}
+
+// TestClustersForSecretMapping — regression for #109. The rendered ArgoCD
+// cluster Secret used to follow only the CR: a change to the *source*
+// kubeconfig Secret (ESO refreshing it after a cluster rebuild) reached
+// nothing, and the rendered Secret kept a dead API server address until
+// somebody annotated the CR by hand. clustersForSecret is the mapping
+// behind the Secret watch that closes that gap — it must enqueue every CR
+// that reads from, or enriches, the changed Secret, and nothing else.
+func TestClustersForSecretMapping(t *testing.T) {
+	ctx := context.Background()
+	ensureArgoNamespace(ctx, t)
+
+	mustCreate(ctx, t, &argov1.ClusterbookCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "map-reader"},
+		Spec: argov1.ClusterbookClusterSpec{
+			ClusterName:              "map-reader",
+			ClusterType:              "kind",
+			SkipReservation:          true,
+			PreserveKubeconfigServer: true,
+			KubeconfigSecretRef:      &argov1.SecretKeyRef{Name: "kc-mapped", Namespace: "argocd"},
+		},
+	})
+	// Same Secret name, different namespace — must NOT be enqueued.
+	mustCreate(ctx, t, &argov1.ClusterbookCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "map-other-ns"},
+		Spec: argov1.ClusterbookClusterSpec{
+			ClusterName:              "map-other-ns",
+			ClusterType:              "kind",
+			SkipReservation:          true,
+			PreserveKubeconfigServer: true,
+			KubeconfigSecretRef:      &argov1.SecretKeyRef{Name: "kc-mapped", Namespace: "default"},
+		},
+	})
+	// Enrich mode pointing at the same Secret — must be enqueued too, so a
+	// third party stripping the clusterbook labels off it gets corrected.
+	mustCreate(ctx, t, &argov1.ClusterbookCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "map-enricher"},
+		Spec: argov1.ClusterbookClusterSpec{
+			ClusterName:              "map-enricher",
+			ClusterType:              "kind",
+			SkipReservation:          true,
+			PreserveKubeconfigServer: true,
+			ExistingSecretRef:        &argov1.SecretObjectRef{Name: "kc-mapped", Namespace: "argocd"},
+		},
+	})
+
+	r := &Reconciler{Client: k8sClient, Scheme: scheme}
+	reqs := r.clustersForSecret(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "kc-mapped", Namespace: "argocd"},
+	})
+
+	got := map[string]bool{}
+	for _, req := range reqs {
+		got[req.Name] = true
+	}
+	if !got["map-reader"] {
+		t.Errorf("kubeconfigSecretRef holder not enqueued, got %v", reqs)
+	}
+	if !got["map-enricher"] {
+		t.Errorf("existingSecretRef holder not enqueued, got %v", reqs)
+	}
+	if got["map-other-ns"] {
+		t.Errorf("CR referencing the same name in another namespace was enqueued, got %v", reqs)
+	}
+
+	// An unreferenced Secret must map to nothing — otherwise every Secret
+	// write in the cluster would fan out into a full reconcile sweep.
+	if reqs := r.clustersForSecret(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "unreferenced", Namespace: "argocd"},
+	}); len(reqs) != 0 {
+		t.Errorf("unreferenced Secret enqueued %v, want none", reqs)
+	}
+}
+
+// TestReconcileFollowsKubeconfigChange — the other half of #109: once the
+// watch has enqueued the CR, the reconcile must actually re-render
+// data.server from the new kubeconfig, and status.kubeconfigHash plus the
+// Secret's kubeconfig-hash annotation must move with it. The hash is what
+// makes a lagging render visible without diffing the two Secrets by hand.
+func TestReconcileFollowsKubeconfigChange(t *testing.T) {
+	ctx := context.Background()
+	ensureArgoNamespace(ctx, t)
+
+	rebuiltKubeconfig := strings.Replace(
+		fakeKubeconfig, "https://example.com:6443", "https://10.31.102.121:6443", 1)
+
+	kc := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "kc-rebuild", Namespace: "argocd"},
+		Data:       map[string][]byte{"kubeconfig": []byte(fakeKubeconfig)},
+	}
+	mustCreate(ctx, t, kc)
+	mustCreate(ctx, t, &argov1.ClusterbookCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "rebuilt"},
+		Spec: argov1.ClusterbookClusterSpec{
+			ClusterName:              "rebuilt",
+			ClusterType:              "kind",
+			SkipReservation:          true,
+			PreserveKubeconfigServer: true,
+			KubeconfigSecretRef:      &argov1.SecretKeyRef{Name: "kc-rebuild", Namespace: "argocd"},
+			ArgoCDNamespace:          "argocd",
+		},
+	})
+
+	r := &Reconciler{Client: k8sClient, Scheme: scheme}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "rebuilt"}}); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+
+	secretKey := types.NamespacedName{Name: "cluster-rebuilt", Namespace: "argocd"}
+	var sec corev1.Secret
+	if err := k8sClient.Get(ctx, secretKey, &sec); err != nil {
+		t.Fatalf("get Secret: %v", err)
+	}
+	if got, want := string(sec.Data["server"]), "https://example.com:6443"; got != want {
+		t.Fatalf("server = %q, want %q", got, want)
+	}
+	if got, want := sec.Annotations[annotationKubeconfigHash], kubeconfigHash([]byte(fakeKubeconfig)); got != want {
+		t.Errorf("kubeconfig-hash annotation = %q, want %q", got, want)
+	}
+
+	// The cluster is rebuilt under the same name and comes up on a new
+	// address; the source Secret is refreshed in place.
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "kc-rebuild", Namespace: "argocd"}, kc); err != nil {
+		t.Fatalf("get kubeconfig Secret: %v", err)
+	}
+	kc.Data["kubeconfig"] = []byte(rebuiltKubeconfig)
+	if err := k8sClient.Update(ctx, kc); err != nil {
+		t.Fatalf("update kubeconfig Secret: %v", err)
+	}
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "rebuilt"}}); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+
+	if err := k8sClient.Get(ctx, secretKey, &sec); err != nil {
+		t.Fatalf("get Secret after rebuild: %v", err)
+	}
+	if got, want := string(sec.Data["server"]), "https://10.31.102.121:6443"; got != want {
+		t.Errorf("server after rebuild = %q, want %q", got, want)
+	}
+	wantHash := kubeconfigHash([]byte(rebuiltKubeconfig))
+	if got := sec.Annotations[annotationKubeconfigHash]; got != wantHash {
+		t.Errorf("kubeconfig-hash annotation after rebuild = %q, want %q", got, wantHash)
+	}
+
+	var fresh argov1.ClusterbookCluster
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "rebuilt"}, &fresh); err != nil {
+		t.Fatalf("get CR: %v", err)
+	}
+	if fresh.Status.KubeconfigHash != wantHash {
+		t.Errorf("status.kubeconfigHash = %q, want %q", fresh.Status.KubeconfigHash, wantHash)
 	}
 }
