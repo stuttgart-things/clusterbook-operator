@@ -54,7 +54,7 @@ jobs:
       - name: Semantic release
         uses: dagger/dagger-for-github@v8.4.1
         with:
-          version: "0.20.0"
+          version: "0.21.8"
           verb: call
           module: github.com/stuttgart-things/dagger/release@v0.86.0
           args: >-
@@ -114,7 +114,7 @@ jobs:
         if: steps.version-after.outputs.new_release == 'true'
         uses: dagger/dagger-for-github@v8.4.1
         with:
-          version: "0.20.0"
+          version: "0.21.8"
           verb: call
           module: github.com/stuttgart-things/dagger/kcl@v0.86.0
           args: >-

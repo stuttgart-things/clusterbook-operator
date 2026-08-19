@@ -183,10 +183,25 @@ type ClusterbookClusterStatus struct {
 	// repeat reconciles in operator-allocated mode (spec.lbRange.count > 0)
 	// don't re-reserve the range. In user-pinned mode they mirror
 	// spec.lbRange.start/stop.
-	LBRangeStart string             `json:"lbRangeStart,omitempty"`
-	LBRangeStop  string             `json:"lbRangeStop,omitempty"`
-	SecretName   string             `json:"secretName,omitempty"`
-	Conditions   []metav1.Condition `json:"conditions,omitempty"`
+	LBRangeStart string `json:"lbRangeStart,omitempty"`
+	LBRangeStop  string `json:"lbRangeStop,omitempty"`
+	SecretName   string `json:"secretName,omitempty"`
+
+	// KubeconfigHash is the SHA-256 (hex, "sha256:"-prefixed) of the
+	// kubeconfig bytes that produced the currently rendered ArgoCD cluster
+	// Secret. The same value is stamped onto that Secret as the annotation
+	// clusterbook.stuttgart-things.com/kubeconfig-hash.
+	//
+	// It exists to make a lagging render visible by looking: hash the
+	// Secret named by spec.kubeconfigSecretRef and compare. A mismatch
+	// means the operator has not yet caught up with its source — the
+	// failure mode from issue #109, where the rendered Secret kept a dead
+	// API server address after a cluster rebuild and nothing in the status
+	// said so. Empty in enrich mode (spec.existingSecretRef), which never
+	// reads a kubeconfig.
+	KubeconfigHash string `json:"kubeconfigHash,omitempty"`
+
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
