@@ -11,6 +11,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -102,11 +103,10 @@ func (r *AllocationReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		cr.Status.FQDN = info.FQDN
 		cr.Status.Zone = info.Zone
 	}
-	setCondition(&cr.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
-		Status:             metav1.ConditionTrue,
-		Reason:             "Reconciled",
-		LastTransitionTime: metav1.Now(),
+	meta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
+		Type:   "Ready",
+		Status: metav1.ConditionTrue,
+		Reason: "Reconciled",
 	})
 	if err := r.Status().Update(ctx, &cr); err != nil {
 		lg.Error(err, "status update failed")
@@ -178,22 +178,21 @@ func (r *AllocationReconciler) upsertConfigMapSink(ctx context.Context, cr *argo
 // allocations (and/or a ClusterbookCluster registration) can coexist on
 // the same Secret without overwriting each other's facts. Per allocation:
 //
-//   label   clusterbook.stuttgart-things.com/allocation-<name>         = "true"  (presence for selectors)
-//   label   clusterbook.stuttgart-things.com/allocation-<name>-ip      = <ip>    (IP as a selectable label)
-//   label   clusterbook.stuttgart-things.com/allocation-<name>-zone    = <zone>  (zone likewise; FQDN has "*" so it stays annotation-only)
-//   annot.  clusterbook.stuttgart-things.com/allocation-<name>-ip      = <ip>
-//   annot.  clusterbook.stuttgart-things.com/allocation-<name>-fqdn    = <fqdn>
-//   annot.  clusterbook.stuttgart-things.com/allocation-<name>-zone    = <zone>
+//	label   clusterbook.stuttgart-things.com/allocation-<name>         = "true"  (presence for selectors)
+//	label   clusterbook.stuttgart-things.com/allocation-<name>-ip      = <ip>    (IP as a selectable label)
+//	label   clusterbook.stuttgart-things.com/allocation-<name>-zone    = <zone>  (zone likewise; FQDN has "*" so it stays annotation-only)
+//	annot.  clusterbook.stuttgart-things.com/allocation-<name>-ip      = <ip>
+//	annot.  clusterbook.stuttgart-things.com/allocation-<name>-fqdn    = <fqdn>
+//	annot.  clusterbook.stuttgart-things.com/allocation-<name>-zone    = <zone>
 func (r *AllocationReconciler) enrichClusterSecret(ctx context.Context, cr *argov1.ClusterbookAllocation, ip string, info *cbkclient.ClusterInfo, ref *argov1.SecretObjectRef) error {
 	var secret corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			setCondition(&cr.Status.Conditions, metav1.Condition{
-				Type:               "ClusterSecretFound",
-				Status:             metav1.ConditionFalse,
-				Reason:             "ClusterSecretNotFound",
-				Message:            fmt.Sprintf("secret %s/%s not found", ref.Namespace, ref.Name),
-				LastTransitionTime: metav1.Now(),
+			meta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
+				Type:    "ClusterSecretFound",
+				Status:  metav1.ConditionFalse,
+				Reason:  "ClusterSecretNotFound",
+				Message: fmt.Sprintf("secret %s/%s not found", ref.Namespace, ref.Name),
 			})
 			return nil
 		}
@@ -303,4 +302,3 @@ func (r *AllocationReconciler) reconcileDNSDrift(ctx context.Context, api *cbkcl
 	}
 	return nil
 }
-
