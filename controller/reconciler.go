@@ -12,6 +12,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -237,19 +238,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, fmt.Errorf("enrich existing secret: %w", err)
 		}
 		if notFound {
-			setCondition(&cr.Status.Conditions, metav1.Condition{
-				Type:               "Ready",
-				Status:             metav1.ConditionFalse,
-				Reason:             "ExistingSecretNotFound",
-				Message:            fmt.Sprintf("secret %s/%s not found", ref.Namespace, ref.Name),
-				LastTransitionTime: metav1.Now(),
+			meta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
+				Type:    "Ready",
+				Status:  metav1.ConditionFalse,
+				Reason:  "ExistingSecretNotFound",
+				Message: fmt.Sprintf("secret %s/%s not found", ref.Namespace, ref.Name),
 			})
 		} else {
-			setCondition(&cr.Status.Conditions, metav1.Condition{
-				Type:               "Ready",
-				Status:             metav1.ConditionTrue,
-				Reason:             "Reconciled",
-				LastTransitionTime: metav1.Now(),
+			meta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
+				Type:   "Ready",
+				Status: metav1.ConditionTrue,
+				Reason: "Reconciled",
 			})
 		}
 		secretName = ref.Name
@@ -271,11 +270,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, fmt.Errorf("upsert argo secret: %w", err)
 		}
 		secretName = secret.Name
-		setCondition(&cr.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
-			Status:             metav1.ConditionTrue,
-			Reason:             "Reconciled",
-			LastTransitionTime: metav1.Now(),
+		meta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
+			Type:   "Ready",
+			Status: metav1.ConditionTrue,
+			Reason: "Reconciled",
 		})
 	}
 
@@ -734,14 +732,4 @@ func (r *Reconciler) reconcileDNSDrift(ctx context.Context, api *cbkclient.Clien
 		return nil
 	}
 	return nil
-}
-
-func setCondition(conds *[]metav1.Condition, c metav1.Condition) {
-	for i := range *conds {
-		if (*conds)[i].Type == c.Type {
-			(*conds)[i] = c
-			return
-		}
-	}
-	*conds = append(*conds, c)
 }
