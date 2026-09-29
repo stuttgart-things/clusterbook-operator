@@ -96,6 +96,16 @@ func registrationOnlyAllocation(cr *argov1.ClusterbookCluster) allocation {
 type Reconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// ProbeCluster checks the downstream API server before the
+	// cluster-ready label is stamped. Nil means probeReadyz.
+	ProbeCluster ClusterProbe
+}
+
+func (r *Reconciler) probe() ClusterProbe {
+	if r.ProbeCluster != nil {
+		return r.ProbeCluster
+	}
+	return defaultClusterProbe
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -230,6 +240,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	var (
 		secretName string
 		kcHash     string
+		result     ctrl.Result
 	)
 	if cr.Spec.ExistingSecretRef != nil {
 		ref := *cr.Spec.ExistingSecretRef
@@ -265,6 +276,29 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		server := buildServerURL(&cr, ip, kubeconfigServer, info)
 		kcHash = kubeconfigHash(kcfg)
 
+		// Probe before the upsert so a first success lands the
+		// cluster-ready label in the same write. Latching: once
+		// status.clusterReady is true the probe never runs again.
+		if !cr.Status.ClusterReady {
+			if err := r.probeCluster(ctx, server, argoCfg); err != nil {
+				meta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
+					Type:    conditionClusterReachable,
+					Status:  metav1.ConditionFalse,
+					Reason:  "ProbeFailed",
+					Message: err.Error(),
+				})
+				result = ctrl.Result{RequeueAfter: probeRequeue}
+			} else {
+				cr.Status.ClusterReady = true
+				meta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
+					Type:    conditionClusterReachable,
+					Status:  metav1.ConditionTrue,
+					Reason:  "ReadyzOK",
+					Message: "GET " + server + "/readyz answered 200",
+				})
+			}
+		}
+
 		secret, err := r.upsertArgoSecret(ctx, &cr, alloc, info, server, kcHash, argoCfg, caData)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("upsert argo secret: %w", err)
@@ -291,7 +325,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Status().Update(ctx, &cr); err != nil {
 		lg.Error(err, "status update failed")
 	}
-	return ctrl.Result{}, nil
+	return result, nil
+}
+
+// probeCluster runs the readiness probe against the connection ArgoCD will
+// use for this cluster.
+func (r *Reconciler) probeCluster(ctx context.Context, server string, argoCfg []byte) error {
+	cfg, err := restConfigFromArgo(server, argoCfg)
+	if err != nil {
+		return err
+	}
+	return r.probe()(ctx, cfg)
 }
 
 func (r *Reconciler) finalize(ctx context.Context, cr *argov1.ClusterbookCluster, api *cbkclient.Client) (ctrl.Result, error) {
@@ -450,6 +494,10 @@ func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.Clusterboo
 	for k, v := range cr.Spec.Labels {
 		labels[k] = v
 	}
+	// Set after spec.labels so a user cannot spoof readiness.
+	if cr.Status.ClusterReady {
+		labels[labelClusterReady] = "true"
+	}
 
 	annotations := map[string]string{
 		annotationClusterName: cr.Spec.ClusterName,
@@ -495,15 +543,12 @@ func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.Clusterboo
 		if secret.Labels == nil {
 			secret.Labels = map[string]string{}
 		}
-		for k, v := range labels {
-			secret.Labels[k] = v
-		}
 		if secret.Annotations == nil {
 			secret.Annotations = map[string]string{}
 		}
-		for k, v := range annotations {
-			secret.Annotations[k] = v
-		}
+		applyOwned(secret.Labels, secret.Annotations[annotationOwnedLabels], labels)
+		applyOwned(secret.Annotations, secret.Annotations[annotationOwnedAnnotations], annotations)
+		recordOwned(secret.Annotations, labels, annotations)
 		secret.StringData = map[string]string{
 			"name":   cr.Spec.ClusterName,
 			"server": server,
@@ -525,8 +570,9 @@ func (r *Reconciler) upsertArgoSecret(ctx context.Context, cr *argov1.Clusterboo
 // Invariants for enrich mode:
 //   - data (name/server/config) is never touched
 //   - no controller reference — the Secret's lifecycle is not ours
-//   - everything we write is under clusterbookPrefix so stripEnrichedMetadata
-//     can reverse it cleanly on delete
+//   - everything we write is under clusterbookPrefix or named in the
+//     owned-annotations record, so stripEnrichedMetadata can reverse it
+//     cleanly on delete
 //
 // Returns notFound=true if the referenced Secret is missing; the caller
 // surfaces this via a condition rather than erroring the reconcile.
@@ -540,48 +586,59 @@ func (r *Reconciler) enrichExistingSecret(ctx context.Context, cr *argov1.Cluste
 		return false, err
 	}
 
+	labels := map[string]string{}
+	for k, v := range cr.Spec.Labels {
+		labels[clusterbookPrefix+k] = v
+	}
+	if cr.Spec.ClusterType != "" {
+		labels[labelClusterType] = cr.Spec.ClusterType
+	}
+	annotations := map[string]string{
+		annotationClusterName: cr.Spec.ClusterName,
+	}
+	if alloc.IP != "" {
+		annotations[annotationIP] = alloc.IP
+	}
+	if alloc.LBRangeStart != "" {
+		annotations[annotationLBRangeStart] = alloc.LBRangeStart
+	}
+	if alloc.LBRangeStop != "" {
+		annotations[annotationLBRangeStop] = alloc.LBRangeStop
+	}
+	if info != nil {
+		if info.FQDN != "" {
+			annotations[annotationFQDN] = info.FQDN
+		}
+		if info.Zone != "" {
+			annotations[annotationZone] = info.Zone
+		}
+	}
+	// User-provided annotations (cr.Spec.Annotations). Operator-managed
+	// entries above win on conflict; everything else flows through.
+	for k, v := range cr.Spec.Annotations {
+		if _, ok := annotations[k]; !ok {
+			annotations[k] = v
+		}
+	}
+
 	if secret.Labels == nil {
 		secret.Labels = map[string]string{}
 	}
 	if secret.Annotations == nil {
 		secret.Annotations = map[string]string{}
 	}
-	for k, v := range cr.Spec.Labels {
-		secret.Labels[clusterbookPrefix+k] = v
-	}
-	if cr.Spec.ClusterType != "" {
-		secret.Labels[labelClusterType] = cr.Spec.ClusterType
-	}
-	secret.Annotations[annotationClusterName] = cr.Spec.ClusterName
-	if alloc.IP != "" {
-		secret.Annotations[annotationIP] = alloc.IP
-	}
-	if alloc.LBRangeStart != "" {
-		secret.Annotations[annotationLBRangeStart] = alloc.LBRangeStart
-	}
-	if alloc.LBRangeStop != "" {
-		secret.Annotations[annotationLBRangeStop] = alloc.LBRangeStop
-	}
-	if info != nil {
-		if info.FQDN != "" {
-			secret.Annotations[annotationFQDN] = info.FQDN
-		}
-		if info.Zone != "" {
-			secret.Annotations[annotationZone] = info.Zone
-		}
-	}
-	// User-provided annotations (cr.Spec.Annotations). Operator-managed
-	// entries above win on conflict; everything else flows through.
-	for k, v := range cr.Spec.Annotations {
-		if _, ok := secret.Annotations[k]; !ok {
-			secret.Annotations[k] = v
-		}
-	}
+	// Ownership records live under clusterbookPrefix, so
+	// stripEnrichedMetadata removes them together with everything else.
+	applyOwned(secret.Labels, secret.Annotations[annotationOwnedLabels], labels)
+	applyOwned(secret.Annotations, secret.Annotations[annotationOwnedAnnotations], annotations)
+	recordOwned(secret.Annotations, labels, annotations)
 	return false, r.Update(ctx, &secret)
 }
 
 // stripEnrichedMetadata removes every label and annotation under
-// clusterbookPrefix from the referenced Secret. The Secret itself stays.
+// clusterbookPrefix, plus the unprefixed spec.annotations keys named in the
+// owned-annotations record, from the referenced Secret. The Secret itself
+// stays.
 // A missing Secret is a no-op — nothing to strip.
 func (r *Reconciler) stripEnrichedMetadata(ctx context.Context, ref argov1.SecretObjectRef) error {
 	var secret corev1.Secret
@@ -590,6 +647,11 @@ func (r *Reconciler) stripEnrichedMetadata(ctx context.Context, ref argov1.Secre
 			return nil
 		}
 		return err
+	}
+	// spec.annotations keys are not prefixed; the ownership record is the
+	// only way to know which of them were ours.
+	for _, k := range parseOwnedRecord(secret.Annotations[annotationOwnedAnnotations]) {
+		delete(secret.Annotations, k)
 	}
 	for k := range secret.Labels {
 		if strings.HasPrefix(k, clusterbookPrefix) {
