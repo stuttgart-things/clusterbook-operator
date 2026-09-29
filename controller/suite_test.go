@@ -33,6 +33,10 @@ var (
 func TestMain(m *testing.M) {
 	logf.SetLogger(zap.New(zap.UseDevMode(true)))
 
+	// The fake kubeconfigs point at hosts nobody serves; tests that care
+	// about readiness inject Reconciler.ProbeCluster themselves.
+	defaultClusterProbe = probeUnreachable
+
 	scheme = runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		panic(err)

@@ -9,6 +9,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -130,11 +131,10 @@ func (r *LoadBalancerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		cr.Status.Zone = info.Zone
 	}
 
-	setCondition(&cr.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
-		Status:             metav1.ConditionTrue,
-		Reason:             "Reconciled",
-		LastTransitionTime: metav1.Now(),
+	meta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
+		Type:   "Ready",
+		Status: metav1.ConditionTrue,
+		Reason: "Reconciled",
 	})
 	if err := r.Status().Update(ctx, &cr); err != nil {
 		lg.Error(err, "status update failed")

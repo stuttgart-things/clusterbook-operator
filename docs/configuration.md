@@ -40,7 +40,9 @@
 | `lbRangeStop` | Last LB IP — see `lbRangeStart` |
 | `secretName` | Name of the ArgoCD cluster Secret (always `cluster-<clusterName>`) |
 | `kubeconfigHash` | `sha256:<hex>` of the kubeconfig that produced the currently rendered Secret. Empty in enrich mode. See [Detecting a stale render](#detecting-a-stale-render) |
+| `clusterReady` | Latches to `true` the first time the downstream API answered `GET /readyz`. Create mode only. See [Gating on cluster readiness](#gating-on-cluster-readiness) |
 | `conditions[type=Ready]` | `True` after a successful reconcile |
+| `conditions[type=ClusterReachable]` | Outcome of the readiness probe (`ProbeFailed` carries the error) — create mode only |
 
 ## Cluster Secret labels and annotations
 
@@ -58,6 +60,39 @@ The operator writes (and on CR delete strips, in enrich mode) the following keys
 | `lb-range-start` | annotation | resolved LB range start (only when `lbRange` is set) |
 | `lb-range-stop` | annotation | resolved LB range stop (only when `lbRange` is set) |
 | `kubeconfig-hash` | annotation | `sha256:<hex>` of the source kubeconfig — create mode only |
+| `cluster-ready` | label | `"true"` once the downstream API answered `/readyz` (latching) — create mode only |
+| `owned-labels` | annotation | label keys the operator wrote on the last reconcile |
+| `owned-annotations` | annotation | annotation keys the operator wrote on the last reconcile |
+
+Every label and annotation the operator writes — including those from
+`spec.labels` and `spec.annotations` — is recorded in `owned-labels` /
+`owned-annotations`. A key that was written before but is no longer desired
+(removed from the spec, `spec.clusterType` cleared, …) is deleted on the next
+reconcile. Keys set by anyone else are never recorded and never touched.
+Secrets rendered by an operator older than v0.21 carry no record yet, so
+keys dropped *before* the upgrade still have to be removed by hand once.
+
+## Gating on cluster readiness
+
+`allocation-ip` appears as soon as an IP is reserved — minutes before the
+cluster's API is reliably reachable. In create mode the operator therefore
+probes `GET /readyz` with exactly the server URL and credentials it rendered
+into the ArgoCD cluster Secret, every 30 s until it answers `200`. On the
+first success it sets `status.clusterReady=true` and stamps
+`clusterbook.stuttgart-things.com/cluster-ready: "true"` onto the Secret.
+
+The signal latches: once set it is never probed again and never removed, so
+a cluster that later goes away does not drain its Applications. Gate
+ApplicationSets on both keys:
+
+```yaml
+matchExpressions:
+  - key: clusterbook.stuttgart-things.com/allocation-ip
+    operator: Exists
+  - key: clusterbook.stuttgart-things.com/cluster-ready
+    operator: In
+    values: ["true"]
+```
 
 ## Detecting a stale render
 
@@ -103,7 +138,9 @@ Exactly one target mode must be set. Today `ciliumPool` is the only supported mo
 | `fqdn` | FQDN returned by clusterbook (empty without DNS) |
 | `zone` | DNS zone returned by clusterbook |
 | `poolName` | Name of the generated `CiliumLoadBalancerIPPool` |
+| `clusterReady` | Latches to `true` the first time the downstream API answered `GET /readyz`. Create mode only. See [Gating on cluster readiness](#gating-on-cluster-readiness) |
 | `conditions[type=Ready]` | `True` after a successful reconcile |
+| `conditions[type=ClusterReachable]` | Outcome of the readiness probe (`ProbeFailed` carries the error) — create mode only |
 
 ## KCL deploy profile
 

@@ -201,6 +201,21 @@ type ClusterbookClusterStatus struct {
 	// reads a kubeconfig.
 	KubeconfigHash string `json:"kubeconfigHash,omitempty"`
 
+	// ClusterReady latches to true the first time the downstream cluster's
+	// API server answered GET /readyz, probed with exactly the server URL
+	// and credentials written into the rendered ArgoCD cluster Secret. From
+	// then on the Secret carries the label
+	// clusterbook.stuttgart-things.com/cluster-ready="true", so
+	// ApplicationSets can gate on "the API answers" rather than on
+	// allocation-ip, which only says "an IP was booked" (issue #119).
+	//
+	// It latches: once true it is never probed again and the label is never
+	// removed, so a cluster that goes away later does not drain its
+	// Applications. Not set in enrich mode (spec.existingSecretRef), which
+	// never renders the Secret's connection data.
+	// +optional
+	ClusterReady bool `json:"clusterReady,omitempty"`
+
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
@@ -211,6 +226,7 @@ type ClusterbookClusterStatus struct {
 // +kubebuilder:printcolumn:name="IP",type=string,JSONPath=`.status.ip`
 // +kubebuilder:printcolumn:name="FQDN",type=string,JSONPath=`.status.fqdn`
 // +kubebuilder:printcolumn:name="Secret",type=string,JSONPath=`.status.secretName`
+// +kubebuilder:printcolumn:name="Reachable",type=boolean,JSONPath=`.status.clusterReady`
 type ClusterbookCluster struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

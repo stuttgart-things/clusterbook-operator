@@ -6,9 +6,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -1159,5 +1161,112 @@ func TestReconcileFollowsKubeconfigChange(t *testing.T) {
 	}
 	if fresh.Status.KubeconfigHash != wantHash {
 		t.Errorf("status.kubeconfigHash = %q, want %q", fresh.Status.KubeconfigHash, wantHash)
+	}
+}
+
+// readyCondition returns the Ready condition of the named CR, or nil.
+func readyCondition(ctx context.Context, t *testing.T, name string) *metav1.Condition {
+	t.Helper()
+	var cr argov1.ClusterbookCluster
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, &cr); err != nil {
+		t.Fatalf("get CR %s: %v", name, err)
+	}
+	return meta.FindStatusCondition(cr.Status.Conditions, "Ready")
+}
+
+// TestConditionTimestampStableAcrossReconciles — LastTransitionTime marks
+// the last *change* of a condition's Status, not the last reconcile that
+// looked at it. The hand-rolled setCondition this replaced stamped
+// metav1.Now() on every pass, so every reconcile rewrote the status, and
+// every status write produced an update event that enqueued the CR again.
+// Below one-second granularity that settled on its own; above it (a slow
+// clusterbook call is enough) it was a self-feeding loop.
+func TestConditionTimestampStableAcrossReconciles(t *testing.T) {
+	ctx := context.Background()
+	ensureArgoNamespace(ctx, t)
+
+	mustCreate(ctx, t, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "kc-cond-stable", Namespace: "argocd"},
+		Data:       map[string][]byte{"kubeconfig": []byte(fakeKubeconfig)},
+	})
+	mustCreate(ctx, t, &argov1.ClusterbookCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "cond-stable"},
+		Spec: argov1.ClusterbookClusterSpec{
+			ClusterName:              "cond-stable",
+			ClusterType:              "kind",
+			SkipReservation:          true,
+			PreserveKubeconfigServer: true,
+			KubeconfigSecretRef:      &argov1.SecretKeyRef{Name: "kc-cond-stable", Namespace: "argocd"},
+			ArgoCDNamespace:          "argocd",
+		},
+	})
+
+	r := &Reconciler{Client: k8sClient, Scheme: scheme}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "cond-stable"}}); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	first := readyCondition(ctx, t, "cond-stable")
+	if first == nil || first.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready condition after first reconcile = %+v, want True", first)
+	}
+
+	// LastTransitionTime serialises at second granularity, so a same-second
+	// second reconcile would pass this test even with the old behaviour.
+	time.Sleep(1100 * time.Millisecond)
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "cond-stable"}}); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	second := readyCondition(ctx, t, "cond-stable")
+	if !second.LastTransitionTime.Equal(&first.LastTransitionTime) {
+		t.Errorf("LastTransitionTime moved without a status change: %s -> %s",
+			first.LastTransitionTime, second.LastTransitionTime)
+	}
+}
+
+// TestConditionTimestampMovesOnTransition — the other half: when Status
+// really does flip, the timestamp must follow, otherwise the field stops
+// meaning anything. Enrich mode gives a clean flip: Ready=False while the
+// referenced Secret is missing, Ready=True once it exists.
+func TestConditionTimestampMovesOnTransition(t *testing.T) {
+	ctx := context.Background()
+	ensureArgoNamespace(ctx, t)
+
+	mustCreate(ctx, t, &argov1.ClusterbookCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "cond-flip"},
+		Spec: argov1.ClusterbookClusterSpec{
+			ClusterName:              "cond-flip",
+			ClusterType:              "kind",
+			SkipReservation:          true,
+			PreserveKubeconfigServer: true,
+			ExistingSecretRef:        &argov1.SecretObjectRef{Name: "cluster-cond-flip", Namespace: "argocd"},
+		},
+	})
+
+	r := &Reconciler{Client: k8sClient, Scheme: scheme}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "cond-flip"}}); err != nil {
+		t.Fatalf("reconcile with missing secret: %v", err)
+	}
+	before := readyCondition(ctx, t, "cond-flip")
+	if before == nil || before.Status != metav1.ConditionFalse {
+		t.Fatalf("Ready condition = %+v, want False while the secret is missing", before)
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+
+	mustCreate(ctx, t, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster-cond-flip", Namespace: "argocd"},
+		Data:       map[string][]byte{"server": []byte("https://example.com:6443")},
+	})
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "cond-flip"}}); err != nil {
+		t.Fatalf("reconcile with secret present: %v", err)
+	}
+	after := readyCondition(ctx, t, "cond-flip")
+	if after.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready condition = %+v, want True once the secret exists", after)
+	}
+	if !after.LastTransitionTime.After(before.LastTransitionTime.Time) {
+		t.Errorf("LastTransitionTime did not move on a real transition: %s -> %s",
+			before.LastTransitionTime, after.LastTransitionTime)
 	}
 }
