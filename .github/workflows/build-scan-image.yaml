@@ -38,7 +38,7 @@ jobs:
         with:
           version: "0.21.9"
           verb: call
-          module: github.com/stuttgart-things/blueprints/kubernetes-microservice@v1.71.0
+          module: github.com/stuttgart-things/blueprints/kubernetes-microservice@v3.12.4
           args: >-
             bake-image
             --src .
@@ -54,7 +54,7 @@ jobs:
         with:
           version: "0.21.9"
           verb: call
-          module: github.com/stuttgart-things/blueprints/kubernetes-microservice@v1.71.0
+          module: github.com/stuttgart-things/blueprints/kubernetes-microservice@v3.12.4
           args: >-
             scan-image
             --image-ref ttl.sh/stuttgart-things/clusterbook-operator:${{ steps.meta.outputs.commit }}
